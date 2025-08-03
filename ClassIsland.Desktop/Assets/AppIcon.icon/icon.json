@@ -1,5 +1,6 @@
 {
-  "fill" : "system-dark",
+  "color-space-for-untagged-svg-colors" : "display-p3",
+  "fill" : "automatic",
   "groups" : [
     {
       "layers" : [
