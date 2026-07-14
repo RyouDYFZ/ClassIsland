@@ -367,6 +367,10 @@ public partial class DataTransferPage : UserControl
         try
         {
             ViewModel.PageIndex = 3;
+            var topLevel = TopLevel.GetTopLevel(this) ?? AppBase.Current.GetRootWindow();
+            using var file = await PlatformServices.FilePickerService.GetFileAsync(root, topLevel)
+                             ?? throw new FileNotFoundException("无法打开所选 ClassIsland 数据文件。", root);
+            await using var inputStream = await file.OpenReadAsync();
             await Task.Run(() =>
             {
                 var appRoot = Path.GetFullPath(CommonDirectories.AppRootFolderPath);
@@ -376,7 +380,7 @@ public partial class DataTransferPage : UserControl
                     Directory.Delete(PluginService.PluginsRootPath, true);
                 }
 
-                using var archive = ZipFile.OpenRead(root);
+                using var archive = new ZipArchive(inputStream, ZipArchiveMode.Read, true);
                 foreach (var entry in archive.Entries)
                 {
                     if (!ShouldImportEntry(entry.FullName))
@@ -545,7 +549,23 @@ public partial class DataTransferPage : UserControl
             }
             else
             {
-                await CreateClassIsland2ExportArchiveAsync(ViewModel.ImportSourcePath);
+                var path = ViewModel.ImportSourcePath;
+                var topLevel = TopLevel.GetTopLevel(this) ?? AppBase.Current.GetRootWindow();
+                using var file = await PlatformServices.FilePickerService.GetFileAsync(path, topLevel)
+                                 ?? throw new FileNotFoundException(
+                                     "无法打开所选 ClassIsland 数据文件。",
+                                     path);
+                await using var outputStream = await file.OpenWriteAsync();
+                if (outputStream.CanSeek)
+                {
+                    outputStream.SetLength(0);
+                    outputStream.Position = 0;
+                }
+
+                await StreamExportHelper.WritePathBasedExportAsync(
+                    outputStream,
+                    ".cidata",
+                    CreateClassIsland2ExportArchiveAsync);
             }
 
             ViewModel.PageIndex = 4;

@@ -43,7 +43,6 @@ using ClassIsland.Core.Helpers;
 using ClassIsland.Core.Helpers.UI;
 using ClassIsland.Core.Models.UI;
 using ClassIsland.Platforms.Abstraction;
-using ClassIsland.Platforms.Abstraction.Services;
 using DynamicData;
 using FluentAvalonia.UI.Controls;
 using FluentAvalonia.UI.Data;
@@ -602,10 +601,7 @@ public partial class SettingsWindowNew : ViewBase, IFANavigationPageFactory
                         ]
                     },
                     TopLevel.GetTopLevel(this)!,
-                    output => StreamExportHelper.WritePathBasedExportAsync(
-                        output,
-                        ".zip",
-                        path => DiagnosticService.ExportDiagnosticData(path, false)));
+                    output => DiagnosticService.ExportDiagnosticData(output));
             }
             finally
             {
@@ -618,9 +614,17 @@ public partial class SettingsWindowNew : ViewBase, IFANavigationPageFactory
             }
 
             this.ShowSuccessToast($"已导出诊断信息到 {file}。");
-            if (!PlatformHelper.IsAppleMobile && Path.GetDirectoryName(file) is { Length: > 0 } directory)
+            if (!PlatformHelper.IsAppleMobile)
             {
-                await PlatformServices.LauncherService.LaunchPath(directory);
+                var launchPath = PlatformServices.FilePickerService.IsBookmark(file)
+                    ? file
+                    : Path.IsPathFullyQualified(file)
+                        ? Path.GetDirectoryName(file)
+                        : null;
+                if (launchPath is { Length: > 0 })
+                {
+                    await PlatformServices.LauncherService.LaunchPath(launchPath);
+                }
             }
         }
         catch (Exception exception)
@@ -747,7 +751,16 @@ public partial class SettingsWindowNew : ViewBase, IFANavigationPageFactory
 
         try
         {
-            await ShortcutHelpers.CreateClassSwapShortcutAsync(file);
+            var topLevel = TopLevel.GetTopLevel(this)!;
+            using var storageFile = await PlatformServices.FilePickerService.GetFileAsync(file, topLevel)
+                                    ?? throw new FileNotFoundException("无法打开所选快捷方式文件。", file);
+            await using var outputStream = await storageFile.OpenWriteAsync();
+            if (outputStream.CanSeek)
+            {
+                outputStream.SetLength(0);
+                outputStream.Position = 0;
+            }
+            await ShortcutHelpers.CreateClassSwapShortcutAsync(outputStream);
             this.ShowSuccessToast($"已创建快捷换课图标到 {file}。");
         }
         catch (Exception exception)

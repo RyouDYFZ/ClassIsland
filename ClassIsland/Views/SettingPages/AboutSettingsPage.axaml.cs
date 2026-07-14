@@ -307,4 +307,3 @@ public partial class AboutSettingsPage : SettingsPageBase
         }
     }
 }
-

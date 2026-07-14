@@ -1,14 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
 using ClassIsland.Core.Abstractions.Services;
 using ClassIsland.Core.Helpers;
 using ClassIsland.Core.Helpers.UI;
 using ClassIsland.Platforms.Abstraction;
-using ClassIsland.Platforms.Abstraction.Services;
 using ClassIsland.Services;
 using ClassIsland.Shared;
 using ClassIsland.Shared.Extensions;
@@ -67,23 +65,29 @@ public class CsesExportHelper
                     ]
                 },
                 root,
-                output => StreamExportHelper.WritePathBasedExportAsync(
-                    output,
-                    ".yml",
-                    path =>
-                    {
-                        CsesLoader.SaveToYamlFile(csesProfile, path);
-                        return Task.CompletedTask;
-                    }));
+                async output =>
+                {
+                    await using var writer = new StreamWriter(output, leaveOpen: true);
+                    await writer.WriteAsync(CsesLoader.SaveToYamlString(csesProfile));
+                    await writer.FlushAsync();
+                });
             if (filePath == null)
             {
                 return;
             }
 
             root.ShowSuccessToast($"成功导出到 {filePath}。");
-            if (!PlatformHelper.IsAppleMobile && Path.GetDirectoryName(filePath) is { Length: > 0 } directory)
+            if (!PlatformHelper.IsAppleMobile)
             {
-                await PlatformServices.LauncherService.LaunchPath(directory);
+                var launchPath = PlatformServices.FilePickerService.IsBookmark(filePath)
+                    ? filePath
+                    : Path.IsPathFullyQualified(filePath)
+                        ? Path.GetDirectoryName(filePath)
+                        : null;
+                if (launchPath is { Length: > 0 })
+                {
+                    await PlatformServices.LauncherService.LaunchPath(launchPath);
+                }
             }
         }
         catch (Exception exception)

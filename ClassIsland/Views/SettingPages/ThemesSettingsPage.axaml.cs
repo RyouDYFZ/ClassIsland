@@ -21,7 +21,6 @@ using ClassIsland.Core.Enums;
 using ClassIsland.Core.Helpers;
 using ClassIsland.Core.Helpers.UI;
 using ClassIsland.Platforms.Abstraction;
-using ClassIsland.Platforms.Abstraction.Services;
 using ClassIsland.Shared;
 using FluentAvalonia.UI.Controls;
 using FluentAvalonia.UI.Data;
@@ -158,12 +157,7 @@ public partial class ThemesSettingsPage : SettingsPageBase
                         ]
                     },
                     topLevel,
-                    output => StreamExportHelper.WritePathBasedExportAsync(
-                        output,
-                        ".zip",
-                        path => ViewModel.XamlThemeService.PackageThemeAsync(
-                            info.Manifest.Id,
-                            path)));
+                    output => ViewModel.XamlThemeService.PackageThemeAsync(info.Manifest.Id, output));
             }
             finally
             {
@@ -174,9 +168,17 @@ public partial class ThemesSettingsPage : SettingsPageBase
                 return;
 
             this.ShowSuccessToast($"已将主题 {info.Manifest.Id} 打包到 {file}。");
-            if (!PlatformHelper.IsAppleMobile && Path.GetDirectoryName(file) is { Length: > 0 } directory)
+            if (!PlatformHelper.IsAppleMobile)
             {
-                await PlatformServices.LauncherService.LaunchPath(directory);
+                var launchPath = PlatformServices.FilePickerService.IsBookmark(file)
+                    ? file
+                    : Path.IsPathFullyQualified(file)
+                        ? Path.GetDirectoryName(file)
+                        : null;
+                if (launchPath is { Length: > 0 })
+                {
+                    await PlatformServices.LauncherService.LaunchPath(launchPath);
+                }
             }
         }
         catch (Exception ex)

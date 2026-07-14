@@ -30,6 +30,17 @@ internal sealed class IosPlatformFilePickerService : AvaloniaDefaultPlatformFile
         return materializer;
     }
 
+    public override async Task<List<string>> OpenFilesPickerAsync(
+        FilePickerOpenOptions options,
+        TopLevel root)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(root);
+
+        var files = await root.StorageProvider.OpenFilePickerAsync(options);
+        return await CreateTemporaryMaterializer().MaterializeFilesAsync(files);
+    }
+
     public override Task<List<string>> MaterializeFilesAsync(
         IReadOnlyList<IStorageFile> files)
     {
@@ -107,6 +118,22 @@ internal sealed class IosPlatformFilePickerService : AvaloniaDefaultPlatformFile
 
         var folders = await root.StorageProvider.OpenFolderPickerAsync(options);
         return await CreateTemporaryMaterializer().MaterializeFoldersAsync(folders);
+    }
+
+    public override Task<IStorageFile?> GetFileAsync(string path, TopLevel root)
+    {
+        if (ImportedFileReference.TryResolve(path, out var resolvedPath))
+        {
+            path = resolvedPath;
+        }
+
+        return base.GetFileAsync(path, root);
+    }
+
+    public override bool IsBookmark(string path)
+    {
+        return path.StartsWith(ImportedFileReference.Prefix, StringComparison.Ordinal) ||
+               base.IsBookmark(path);
     }
 
 }

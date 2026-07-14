@@ -113,6 +113,29 @@ public class DiagnosticService(SettingsService settingsService, FileFolderServic
     {
         try
         {
+            await using (var outputStream = File.Create(path))
+            {
+                await ExportDiagnosticData(outputStream);
+            }
+            if (showExportedFile && Path.GetDirectoryName(path) is { Length: > 0 } directory)
+            {
+                await PlatformServices.LauncherService.LaunchPath(directory);
+            }
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(e, "无法导出诊断数据。");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 导出诊断信息到流
+    /// </summary>
+    public async Task ExportDiagnosticData(Stream outputStream)
+    {
+        try
+        {
             var temp = Directory.CreateTempSubdirectory("ClassIslandDiagnosticExport").FullName;
             var logs = string.Join(Environment.NewLine, AppLogService.Logs);
             //await File.WriteAllTextAsync(Path.Combine(temp, "Logs.log"), logs);
@@ -131,16 +154,11 @@ public class DiagnosticService(SettingsService settingsService, FileFolderServic
             FileFolderService.CopyFolder(Path.Combine(CommonDirectories.AppConfigPath), Path.Combine(temp, "Config/"));
             FileFolderService.CopyFolder(Path.Combine(CommonDirectories.AppLogFolderPath), Path.Combine(temp, "Logs/"));
 
-            File.Delete(path);
             await Task.Run(() =>
             {
-                ZipFile.CreateFromDirectory(temp, path);
+                ZipFile.CreateFromDirectory(temp, outputStream);
             });
             Directory.Delete(temp, true);
-            if (showExportedFile && Path.GetDirectoryName(path) is { Length: > 0 } directory)
-            {
-                await PlatformServices.LauncherService.LaunchPath(directory);
-            }
         }
         catch (Exception e)
         {

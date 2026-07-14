@@ -16,57 +16,120 @@ partial class Build
     AbsolutePath AppPublishArtifactPath;
     AbsolutePath IosPublishArtifactPath;
     bool IsSecretFilled = false;
-    
-    Target RestoreDesktopApp => _ => _
-        .Before(CompileApp)
-        .DependsOn(GenerateMetadata)
-        .Executes(() =>
-        {
-            if (IsIosBuild)
-            {
-                DotNetRestore(s => s
-                    .SetProjectFile(IosAppEntryProject)
-                    .SetProperty("PublishBuilding", true)
-                    .SetProperty("PublishPlatform", "ios")
-                    .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
-                    .SetProperty("ClassIsland_PlatformTarget", "arm64"));
-                return;
-            }
 
+    void RestoreDesktopOrIosApp()
+    {
+        if (IsIosBuild)
+        {
             DotNetRestore(s => s
-                .SetProjectFile(DesktopAppEntryProject)
+                .SetProjectFile(IosAppEntryProject)
                 .SetProperty("PublishBuilding", true)
-                .SetProperty("PublishPlatform", OsName)
+                .SetProperty("PublishPlatform", "ios")
                 .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
-                .SetProperty("ClassIsland_PlatformTarget", Arch));
-        });
-    
-    Target CleanDesktopApp => _ => _
-        .Before(CompileApp)
-        .DependsOn(CleanOutputDir)
-        .DependsOn(GenerateMetadata)
-        .DependsOn(RestoreDesktopApp)
-        .Executes(() =>
+                .SetProperty("ClassIsland_PlatformTarget", "arm64"));
+            return;
+        }
+
+        DotNetRestore(s => s
+            .SetProjectFile(DesktopAppEntryProject)
+            .SetProperty("PublishBuilding", true)
+            .SetProperty("PublishPlatform", OsName)
+            .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
+            .SetProperty("ClassIsland_PlatformTarget", Arch));
+    }
+
+    void CleanDesktopOrIosApp()
+    {
+        if (IsIosBuild)
         {
-            if (IsIosBuild)
+            DotNetClean(s => s
+                .SetProject(IosAppEntryProject)
+                .SetProperty("PublishBuilding", true)
+                .SetProperty("PublishPlatform", "ios")
+                .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
+                .SetProperty("ClassIsland_PlatformTarget", "arm64"));
+            return;
+        }
+
+        DotNetClean(s => s
+            .SetProject(DesktopAppEntryProject)
+            .SetProperty("PublishBuilding", true)
+            .SetProperty("PublishPlatform", OsName)
+            .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
+            .SetProperty("ClassIsland_PlatformTarget", Arch));
+    }
+
+    void CompileDesktopOrIosApp()
+    {
+        if (IsIosBuild)
+        {
+            DotNetPublish(settings =>
             {
-                DotNetClean(s => s
+                var enableCodeSigning = EnableCodeSigning ? "true" : "false";
+                settings = settings
                     .SetProject(IosAppEntryProject)
+                    .SetConfiguration(Configuration)
                     .SetProperty("PublishBuilding", true)
                     .SetProperty("PublishPlatform", "ios")
                     .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
-                    .SetProperty("ClassIsland_PlatformTarget", "arm64"));
-                return;
-            }
+                    .SetProperty("ClassIsland_PlatformTarget", "arm64")
+                    .SetProperty("ArchiveOnBuild", enableCodeSigning)
+                    .SetProperty("BuildIpa", true)
+                    .SetProperty("EnableCodeSigning", enableCodeSigning)
+                    .SetProperty("BrandType", BrandType)
+                    .SetProperty("ApplicationDisplayVersion", AppVersion)
+                    .SetProperty("ApplicationVersion", BuildNumber)
+                    .SetProperty("IpaPackagePath", IosPublishArtifactPath);
 
-            DotNetClean(s => s
-                .SetProject(DesktopAppEntryProject)
-                .SetProperty("PublishBuilding", true)
-                .SetProperty("PublishPlatform", OsName)
-                .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
-                .SetProperty("ClassIsland_PlatformTarget", Arch));
-        });
+                if (string.Equals(
+                        Configuration.ToString(),
+                        "Release",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    // Global.props 默认开启符号；通过全局 MSBuild 属性同时约束
+                    // iOS 主项目及所有 ProjectReference，避免 PDB 进入发布 IPA。
+                    settings = settings
+                        .SetProperty("DebugType", "none")
+                        .SetProperty("DebugSymbols", false);
+                }
 
+                if (!EnableCodeSigning)
+                {
+                    return settings;
+                }
+
+                return settings
+                    .SetProperty("CodesignKey", CodesignKey)
+                    .SetProperty("CodesignProvision", CodesignProvision)
+                    .SetProperty("ClassIslandLiveActivityCodesignProvision", ClassIslandLiveActivityCodesignProvision)
+                    .SetProperty("ClassIslandDevelopmentTeam", ClassIslandDevelopmentTeam);
+            });
+            return;
+        }
+
+        var createDeb = Package == "deb";
+        var isSelfContained = BuildType == "selfContained";
+        DotNetPublish(s => s
+            .SetProject(DesktopAppEntryProject)
+            .SetConfiguration(Configuration)
+            .SetProperty("PublishBuilding", true)
+            .SetProperty("PublishPlatform", OsName)
+            .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
+            .SetProperty("ClassIsland_PlatformTarget", Arch)
+            .SetProperty("SelfContained", isSelfContained)
+            .SetProperty("ClassIsland_SelfContained", isSelfContained)
+            .SetProperty("PublishDir", Package == "pkg" ? AppOutputPath : AppPublishPath)
+            .SetProperty("DebUOSOutputFilePath", AppOutputPath / PublishArtifactName + ".deb")
+            .SetProperty("UOSDebVersion", AppVersion)
+            .SetProperty("ApplicationVersion", GitCommitCount)
+            .SetProperty("ApplicationDisplayVersion", AppVersion)
+            .SetProperty("AutoCreateDebUOSAfterPublish", createDeb));
+        if (Package == "pkg")
+        {
+            File.Move(Directory.GetFiles(AppOutputPath).First(x => Path.GetExtension(x) == ".pkg"),
+                AppOutputPath / PublishArtifactName + ".pkg");
+        }
+    }
 
     Target GenerateSecrets => t => t
         .Executes(() =>
@@ -92,94 +155,10 @@ partial class Build
                  """";
             File.WriteAllText(AppSecretsPath, content);
         });
-    
-    Target CompileApp => t => t
-        .DependsOn(GenerateSecrets)
-        .DependsOn(GenerateMetadata)
-        .DependsOn(CleanDesktopApp)
-        .Executes(() =>
-        {
-            if (IsIosBuild)
-            {
-                DotNetPublish(settings =>
-                {
-                    var enableCodeSigning = EnableCodeSigning ? "true" : "false";
-                    settings = settings
-                        .SetProject(IosAppEntryProject)
-                        .SetConfiguration(Configuration)
-                        .SetProperty("PublishBuilding", true)
-                        .SetProperty("PublishPlatform", "ios")
-                        .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
-                        .SetProperty("ClassIsland_PlatformTarget", "arm64")
-                        .SetProperty("ArchiveOnBuild", enableCodeSigning)
-                        .SetProperty("BuildIpa", true)
-                        .SetProperty("EnableCodeSigning", enableCodeSigning)
-                        .SetProperty("BrandType", BrandType)
-                        .SetProperty("ApplicationDisplayVersion", AppVersion)
-                        .SetProperty("ApplicationVersion", BuildNumber)
-                        .SetProperty("IpaPackagePath", IosPublishArtifactPath);
-
-                    if (string.Equals(
-                            Configuration.ToString(),
-                            "Release",
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Global.props 默认开启符号；通过全局 MSBuild 属性同时约束
-                        // iOS 主项目及所有 ProjectReference，避免 PDB 进入发布 IPA。
-                        settings = settings
-                            .SetProperty("DebugType", "none")
-                            .SetProperty("DebugSymbols", false);
-                    }
-
-                    if (!EnableCodeSigning)
-                    {
-                        return settings;
-                    }
-
-                    return settings
-                        .SetProperty("CodesignKey", CodesignKey)
-                        .SetProperty("CodesignProvision", CodesignProvision)
-                        .SetProperty("ClassIslandLiveActivityCodesignProvision", ClassIslandLiveActivityCodesignProvision)
-                        .SetProperty("ClassIslandDevelopmentTeam", ClassIslandDevelopmentTeam);
-                });
-                return;
-            }
-
-            var createDeb = Package == "deb";
-            var isSelfContained = BuildType == "selfContained";
-            DotNetPublish(s => s
-                .SetProject(DesktopAppEntryProject)
-                .SetConfiguration(Configuration)
-                .SetProperty("PublishBuilding", true)
-                .SetProperty("PublishPlatform", OsName)
-                .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
-                .SetProperty("ClassIsland_PlatformTarget", Arch)
-                .SetProperty("SelfContained", isSelfContained)
-                .SetProperty("ClassIsland_SelfContained", isSelfContained)
-                .SetProperty("PublishDir", Package == "pkg" ? AppOutputPath : AppPublishPath)
-                .SetProperty("DebUOSOutputFilePath", AppOutputPath / PublishArtifactName + ".deb")
-                .SetProperty("UOSDebVersion", AppVersion)
-                .SetProperty("ApplicationVersion", AppVersion)
-                .SetProperty("ApplicationDisplayVersion", AppVersion)
-                .SetProperty("AutoCreateDebUOSAfterPublish", createDeb));
-            if (Package == "pkg")
-            {
-                File.Move(Directory.GetFiles(AppOutputPath).First(x => Path.GetExtension(x) == ".pkg"),
-                    AppOutputPath / PublishArtifactName + ".pkg");
-            }
-        });
-
-    Target GenerateAppZipArchive => _ => _
-        .Produces(AppPublishArtifactPath)
-        .DependsOn(CompileApp)
-        .OnlyWhenDynamic(() => Package != "deb" && Package != "pkg" && Package != "ipa")
-        .Executes(() =>
-        {
-            AppPublishPath.ZipTo(AppPublishArtifactPath);
-        });
 
     Target PostCleanup => _ => _
         .After(CompileApp)
+        .After(CompileAndroidApp)
         .DependsOn(GenerateSecrets)
         .AssuredAfterFailure()
         .Executes(() =>
@@ -189,11 +168,5 @@ partial class Build
                 File.Delete(AppSecretsPath);
             }
         });
-
-    Target PublishApp => _ => _
-        .DependsOn(CompileApp)
-        .DependsOn(GenerateAppZipArchive)
-        .DependsOn(PostCleanup);
-    
     
 }
