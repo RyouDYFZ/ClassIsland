@@ -1,7 +1,9 @@
+using ClassIsland.Platforms.Abstraction.Services;
+
 namespace ClassIsland.iOS.Services.Notifications;
 
 /// <summary>
-/// iOS 课程通知支持范围及授权、队列完成策略。
+/// 可独立测试的 iOS 课程通知支持范围及授权、队列完成策略。
 /// </summary>
 internal static class IosNotificationSchedulingPolicy
 {
@@ -46,5 +48,26 @@ internal static class IosNotificationSchedulingPolicy
         return scheduledRequests.Any(x =>
             x.ChannelId == channelId &&
             (x.FireAt.LocalDateTime - expectedLocalFireTime).Duration() <= matchTolerance);
+    }
+
+    public static DateTime GetExpectedQueueTicketLocalFireTime(
+        Guid channelId,
+        bool isChainedTail,
+        DateTime? chainedLogicalEndTime,
+        DateTime logicalNow,
+        DateTimeOffset systemNow)
+    {
+        if (channelId == OnClassChannelId &&
+            isChainedTail &&
+            chainedLogicalEndTime is { } logicalEndTime)
+        {
+            return IosNotificationTimeMapper.ToSystemTime(
+                    logicalEndTime,
+                    logicalNow,
+                    systemNow)
+                .LocalDateTime;
+        }
+
+        return systemNow.LocalDateTime;
     }
 }

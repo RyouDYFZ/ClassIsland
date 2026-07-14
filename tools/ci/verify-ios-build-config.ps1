@@ -110,10 +110,14 @@ $reusableWorkflowPath = Join-Path $RepositoryRoot ".github/workflows/_build_ios_
 Assert-True (-not (Test-Path -LiteralPath $standaloneWorkflowPath)) "The split Build iOS workflow must remain removed."
 Assert-True (-not (Test-Path -LiteralPath $reusableWorkflowPath)) "The split reusable iOS worker must remain removed."
 Assert-True ($releaseWorkflowText.Contains("pull_request:")) "The unified Build workflow must validate iOS changes on pull requests."
+Assert-True ($releaseWorkflowText.Contains("- 'ClassIsland.Android/**'")) "Android changes must trigger pull-request validation."
+Assert-True ($releaseWorkflowText.Contains("- 'tools/release-gen/init-artifacts.ps1'")) "Release artifact collection changes must trigger pull-request validation."
 Assert-True ($releaseWorkflowText.Contains("github.ref == 'refs/heads/develop/v2/misha-alpha'")) "The unified Build workflow must validate pushes to develop/v2/misha-alpha."
 Assert-True ($releaseWorkflowText.Contains("startsWith(github.ref, 'refs/tags/ios-v')")) "The unified Build workflow must validate ios-v* tags."
 Assert-True ($releaseWorkflowText.Contains('ref: ${{ github.event_name == ''workflow_dispatch'' && inputs.release_tag || github.sha }}')) "The iOS job must build the release tag for dispatches and the triggering commit otherwise."
-Assert-True ($releaseWorkflowText.Contains('app_version="${GITHUB_REF_NAME#ios-v}"')) "An ios-v* tag must supply the IPA display version."
+Assert-True ($releaseWorkflowText.Contains('DISPATCH_RELEASE_TAG: ${{ inputs.release_tag }}')) "A release dispatch must derive the iOS version from the selected release tag."
+Assert-True ($releaseWorkflowText.Contains('resolve_release_version "$DISPATCH_RELEASE_TAG"')) "A release dispatch must normalize the selected release tag for iOS."
+Assert-True ($releaseWorkflowText.Contains('resolve_release_version "$GITHUB_REF_NAME"')) "An ios-v* tag must supply the IPA display version."
 Assert-True ($releaseWorkflowText.Contains('app_version="0.0.${GITHUB_RUN_NUMBER}"')) "PR and branch builds must use a valid synthetic iOS display version."
 Assert-True ($releaseWorkflowText.Contains("developer_preview=true")) "PR and branch iOS builds must enable DeveloperPreview."
 Assert-True ($releaseWorkflowText.Contains("developer_preview=false")) "Release dispatch and ios-v* tag builds must disable DeveloperPreview."
@@ -132,7 +136,37 @@ Assert-True ($releaseWorkflowText.Contains("verify-cobertura-coverage.ps1")) "Th
 Assert-True ($releaseWorkflowText.Contains("-MinimumLineRate 0.8")) "The iOS job must enforce at least 80% line coverage."
 Assert-True ($releaseWorkflowText.Contains("bash ./tools/ci/verify-ios-ipa.sh")) "The iOS job must run the shared IPA verification script."
 Assert-True ($releaseWorkflowText.Contains("name: out_app_ios_arm64_selfContained_ipa")) "The iOS artifact must use the release collector naming convention."
-Assert-True ($releaseWorkflowText.Contains("needs: [ pack_app, build_nupkg, build_ios_unsigned ]")) "Publishing must depend on the iOS build."
+$buildAndroidCiStart = $releaseWorkflowText.IndexOf("  build_android_ci:", [StringComparison]::Ordinal)
+$buildAndroidCiEnd = $releaseWorkflowText.IndexOf("  build_android:", $buildAndroidCiStart, [StringComparison]::Ordinal)
+Assert-True (
+    $buildAndroidCiStart -ge 0 -and
+    $buildAndroidCiEnd -gt $buildAndroidCiStart) "The workflow must include a separate Android CI build."
+$buildAndroidCiText = $releaseWorkflowText.Substring(
+    $buildAndroidCiStart,
+    $buildAndroidCiEnd - $buildAndroidCiStart)
+Assert-True ($buildAndroidCiText.Contains('if: ${{ github.event_name != ''workflow_dispatch'' }}')) "The Android CI build must cover pull requests and branch pushes."
+Assert-True ($buildAndroidCiText.Contains("Build unsigned Android APK through NUKE")) "The Android CI build must exercise the NUKE publishing path."
+Assert-True (-not $buildAndroidCiText.Contains("ANDROID_KEYSTORE")) "The Android CI build must not access signing secrets."
+
+$buildAndroidStart = $buildAndroidCiEnd
+$buildAndroidRunsOn = $releaseWorkflowText.IndexOf("    runs-on:", $buildAndroidStart, [StringComparison]::Ordinal)
+$buildAndroidDispatchGuard = $releaseWorkflowText.IndexOf(
+    '    if: ${{ github.event_name == ''workflow_dispatch'' && inputs.release_tag != '''' }}',
+    $buildAndroidStart,
+    [StringComparison]::Ordinal)
+Assert-True (
+    $buildAndroidStart -ge 0 -and
+    $buildAndroidDispatchGuard -gt $buildAndroidStart -and
+    $buildAndroidDispatchGuard -lt $buildAndroidRunsOn) "The signed Android build must run only for an explicit release dispatch."
+$buildAndroidEnd = $releaseWorkflowText.IndexOf("  build_launcher:", $buildAndroidStart, [StringComparison]::Ordinal)
+$buildAndroidText = $releaseWorkflowText.Substring(
+    $buildAndroidStart,
+    $buildAndroidEnd - $buildAndroidStart)
+Assert-True ($buildAndroidText.Contains("environment:")) "The signed Android build must require a protected release environment."
+Assert-True ($buildAndroidText.Contains('RELEASE_TAG: ${{ inputs.release_tag }}')) "The signed Android build must derive its version from the selected release tag."
+Assert-True ($buildAndroidText.Contains('EXPECTED_APP_VERSION: ${{ steps.metadata.outputs.app_version }}')) "The signed Android build must verify its versionName."
+Assert-True ($buildAndroidText.Contains('versionName=''$EXPECTED_APP_VERSION''')) "The signed Android artifact check must inspect versionName."
+Assert-True ($releaseWorkflowText.Contains("needs: [ pack_app, build_nupkg, build_android, build_ios_unsigned ]")) "Publishing must depend on the Android and iOS builds."
 Assert-True ($releaseWorkflowText.Contains("needs.build_ios_unsigned.result == 'success'")) "A failed or skipped iOS build must block publishing."
 Assert-True ($releaseWorkflowText.Contains("Verify downloaded iOS release artifact")) "Publishing must validate the downloaded IPA and checksum."
 Assert-True ($releaseWorkflowText.Contains("./out/*.ipa,./out/*.sha256")) "The draft release must upload the IPA and portable checksum."
@@ -140,6 +174,10 @@ Assert-True ($releaseWorkflowText.Contains("./out/*.ipa,./out/*.sha256")) "The d
 Assert-True ($coverageVerificationText.Contains('GetAttribute("line-rate")')) "Coverage verification must read the Cobertura root line rate."
 Assert-True ($coverageVerificationText.Contains('$lineRate -lt $MinimumLineRate')) "Coverage verification must fail below the requested threshold."
 Assert-True ($coverageVerificationText.Contains('"Stubs/Services/AvaloniaDefaultPlatformFilePickerService.cs"')) "Coverage verification must require the platform file-picker implementation."
+Assert-True ($coverageVerificationText.Contains('"Services/IosFallbackNotificationPayloadPolicy.cs"')) "Coverage verification must require the iOS fallback notification payload policy."
+Assert-True ($coverageVerificationText.Contains('"Services/IosLessonNotificationScheduleSelector.cs"')) "Coverage verification must require the iOS schedule selector."
+Assert-True ($coverageVerificationText.Contains('"Services/IosNotificationSchedulingPolicy.cs"')) "Coverage verification must require the iOS notification policy."
+Assert-True ($coverageVerificationText.Contains('"Services/IosNotificationSynchronizationPolicy.cs"')) "Coverage verification must require the iOS native synchronization policy."
 $coverageInclude = $coverageSettings.SelectSingleNode("/RunSettings/DataCollectionRunSettings/DataCollectors/DataCollector/Configuration/Include").InnerText
 $coverageExclusions = $coverageSettings.SelectSingleNode("/RunSettings/DataCollectionRunSettings/DataCollectors/DataCollector/Configuration/ExcludeByFile").InnerText
 Assert-True ($coverageInclude -eq "[ClassIsland.Platforms.Abstractions]*") "Coverage must instrument the complete platform abstraction assembly."

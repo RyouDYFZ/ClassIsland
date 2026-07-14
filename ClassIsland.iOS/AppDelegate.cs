@@ -16,6 +16,7 @@ using ClassIsland.iOS.Services.Notifications;
 using ClassIsland.iOS.Services.Platform;
 using ClassIsland.iOS.Services.UI;
 using ClassIsland.Platforms.Abstraction;
+using ClassIsland.Platforms.Abstraction.Services;
 using ClassIsland.Shared;
 using ClassIsland.Views;
 using FluentAvalonia.UI.Controls;
@@ -38,6 +39,11 @@ public sealed class AppDelegate : AvaloniaAppDelegate<App>
     private App? _app;
     private Uri? _pendingNavigationUri;
     private bool _isAppNavigationReady;
+
+    public AppDelegate()
+    {
+        ((IAvaloniaAppDelegate)this).Activated += OnActivated;
+    }
 
     protected override AppBuilder CreateAppBuilder()
     {
@@ -128,26 +134,29 @@ public sealed class AppDelegate : AvaloniaAppDelegate<App>
         });
     }
 
-    public override bool OpenUrl(
-        UIApplication application,
-        NSUrl url,
-        UIApplicationOpenUrlOptions options)
+    private void OnActivated(
+        object? sender,
+        ActivatedEventArgs args)
     {
+        if (args is not ProtocolActivatedEventArgs protocolActivation)
+        {
+            return;
+        }
+
         if (!AppNavigationUriParser.TryParseClassIslandUri(
-                url.AbsoluteString,
+                protocolActivation.Uri.AbsoluteUri,
                 out var uri))
         {
-            return false;
+            return;
         }
 
         if (!_isAppNavigationReady)
         {
             _pendingNavigationUri = uri;
-            return true;
+            return;
         }
 
         QueueNavigation(uri!);
-        return true;
     }
 
     private void OnAppStarted(object? sender, EventArgs e)

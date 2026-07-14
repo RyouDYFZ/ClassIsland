@@ -54,7 +54,7 @@ public class ConfigureFileHelper
     }
 
     /// <summary>
-    /// 加载配置文件，并自动创建备份。当加载失败时，将尝试加载备份的配置文件。如果希望在发生加载异常时自动捕获错误，请使用方法 <see cref="LoadConfig{T}"/>。
+    /// 加载配置文件，并自动创建备份。当加载失败时，将尝试加载备份的配置文件。如果希望在发生加载异常时自动捕获错误，请使用路径版 <c>LoadConfig</c>。
     /// </summary>
     /// <typeparam name="T">配置文件类型</typeparam>
     /// <param name="path">配置文件路径</param>
@@ -107,7 +107,7 @@ public class ConfigureFileHelper
     }
 
     /// <summary>
-    /// 加载配置文件，并自动创建备份。当加载失败时，将尝试加载备份的配置文件。如果备份文件也加载失败，会返回新的对象。如果希望在发生加载异常时不自动捕获错误，请使用方法 <see cref="LoadConfigUnWrapped{T}"/>。
+    /// 加载配置文件，并自动创建备份。当加载失败时，将尝试加载备份的配置文件。如果备份文件也加载失败，会返回新的对象。如果希望在发生加载异常时不自动捕获错误，请使用路径版 <c>LoadConfigUnWrapped</c>。
     /// </summary>
     /// <typeparam name="T">配置文件类型</typeparam>
     /// <param name="path">配置文件路径</param>

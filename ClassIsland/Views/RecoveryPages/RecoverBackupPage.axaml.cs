@@ -23,6 +23,19 @@ namespace ClassIsland.Views.RecoveryPages;
 /// </summary>
 public partial class RecoverBackupPage : UserControl
 {
+    private static readonly string[] RecoverableFileNames =
+    [
+        "Settings.json",
+        "Settings.json.bak"
+    ];
+
+    private static readonly string[] RecoverableDirectoryNames =
+    [
+        "Config",
+        "Profiles",
+        "ImportedFiles"
+    ];
+
     public FAFrame? MainFrame { get; init; }
 
     public UserControl? LastPage { get; init; }
@@ -48,8 +61,12 @@ public partial class RecoverBackupPage : UserControl
             };
 
             IEnumerable<string?> files = Directory.GetFiles(backupPath)
+                 .Where(file => string.Equals(
+                     Path.GetExtension(file),
+                     ".zip",
+                     StringComparison.OrdinalIgnoreCase))
                  .Where(file => !excludeFiles.Contains(Path.GetFileName(file)))
-                 .OrderByDescending(Directory.GetLastWriteTime)
+                 .OrderByDescending(File.GetLastWriteTime)
                  .Select(Path.GetFileName);
 
             IEnumerable<string?> directories = Directory.GetDirectories(backupPath)
@@ -62,37 +79,130 @@ public partial class RecoverBackupPage : UserControl
 
     private async Task RecoverBackupAsync(string backupPath)
     {
-        if (ViewModel.RecoverMode == 1)
+        var fullRecovery = ViewModel.RecoverMode == 1;
+        string? stagingPath = null;
+        try
         {
-            if (File.Exists(Path.Combine(CommonDirectories.AppRootFolderPath, "Settings.json")))
+            await Task.Run(() =>
             {
-                File.Delete(Path.Combine(CommonDirectories.AppRootFolderPath, "Settings.json"));
+                stagingPath = Directory.CreateTempSubdirectory(
+                    "ClassIslandBackupRecovery-").FullName;
+                MaterializeBackup(backupPath, stagingPath);
+                EnsureBackupContainsRecoverableData(stagingPath);
+                AppDataConfigurationValidator.ValidateAvailable(stagingPath);
+
+                var appRoot = Path.GetFullPath(CommonDirectories.AppRootFolderPath);
+                var rollbackPath = Directory.CreateTempSubdirectory(
+                    "ClassIslandBackupRollback-").FullName;
+                FileSystemDataTransaction.Execute(
+                    appRoot,
+                    rollbackPath,
+                    RecoverableFileNames.Concat(RecoverableDirectoryNames).ToArray(),
+                    () =>
+                    {
+                        if (fullRecovery)
+                        {
+                            DeleteRecoverableData(appRoot);
+                        }
+
+                        CopyRecoverableData(stagingPath, appRoot, true);
+                    });
+            });
+        }
+        finally
+        {
+            FileSystemDataTransaction.TryDeleteDirectory(stagingPath);
+        }
+    }
+
+    private static void MaterializeBackup(string backupPath, string stagingPath)
+    {
+        if (File.Exists(backupPath))
+        {
+            if (!string.Equals(
+                    Path.GetExtension(backupPath),
+                    ".zip",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("备份文件不是有效的 ZIP 归档。");
             }
-            if (File.Exists(Path.Combine(CommonDirectories.AppRootFolderPath, "Settings.json.bak")))
+
+            using var archive = ZipFile.OpenRead(backupPath);
+            SafeArchiveExtractor.ExtractSelected(
+                archive,
+                stagingPath,
+                new HashSet<string>(RecoverableFileNames, StringComparer.Ordinal),
+                new HashSet<string>(RecoverableDirectoryNames, StringComparer.Ordinal));
+            return;
+        }
+
+        if (Directory.Exists(backupPath))
+        {
+            CopyRecoverableData(backupPath, stagingPath, true);
+            return;
+        }
+
+        throw new FileNotFoundException("找不到要恢复的备份。", backupPath);
+    }
+
+    private static void EnsureBackupContainsRecoverableData(string root)
+    {
+        if (RecoverableFileNames.Any(name => File.Exists(Path.Combine(root, name))) ||
+            RecoverableDirectoryNames.Any(name =>
+                Directory.Exists(Path.Combine(root, name)) &&
+                Directory.EnumerateFiles(
+                    Path.Combine(root, name),
+                    "*",
+                    SearchOption.AllDirectories).Any()))
+        {
+            return;
+        }
+
+        throw new InvalidDataException("备份中不包含可恢复的 ClassIsland 配置数据。");
+    }
+
+    private static void CopyRecoverableData(
+        string sourceRoot,
+        string destinationRoot,
+        bool overwrite)
+    {
+        Directory.CreateDirectory(destinationRoot);
+        foreach (var name in RecoverableFileNames)
+        {
+            var source = Path.Combine(sourceRoot, name);
+            if (File.Exists(source))
             {
-                File.Delete(Path.Combine(CommonDirectories.AppRootFolderPath, "Settings.json.bak"));
-            }
-            if (Directory.Exists(CommonDirectories.AppConfigPath))
-            {
-                Directory.Delete(CommonDirectories.AppConfigPath, true);
-            }
-            if (Directory.Exists(Path.Combine(CommonDirectories.AppRootFolderPath, "Profiles")))
-            {
-                Directory.Delete(Path.Combine(CommonDirectories.AppRootFolderPath, "Profiles"), true);
+                FileSystemDataTransaction.CopyFileStrict(
+                    source,
+                    Path.Combine(destinationRoot, name),
+                    overwrite);
             }
         }
 
-        await Task.Run(() =>
+        foreach (var name in RecoverableDirectoryNames)
         {
-            if (Path.GetExtension(backupPath) == ".zip")
+            var source = Path.Combine(sourceRoot, name);
+            if (Directory.Exists(source))
             {
-                ZipFile.ExtractToDirectory(backupPath, CommonDirectories.AppRootFolderPath, true);
+                FileFolderService.CopyFolderStrict(
+                    source,
+                    Path.Combine(destinationRoot, name),
+                    overwrite);
             }
-            if (Directory.Exists(backupPath))
-            {
-                FileFolderService.CopyFolder(backupPath, CommonDirectories.AppRootFolderPath, true);
-            }
-        });
+        }
+    }
+
+    private static void DeleteRecoverableData(string root)
+    {
+        foreach (var name in RecoverableFileNames)
+        {
+            FileSystemDataTransaction.DeleteEntry(Path.Combine(root, name));
+        }
+
+        foreach (var name in RecoverableDirectoryNames)
+        {
+            FileSystemDataTransaction.DeleteEntry(Path.Combine(root, name));
+        }
     }
 
     private async void ButtonRecover_OnClick(object sender, RoutedEventArgs e)
@@ -116,12 +226,15 @@ public partial class RecoverBackupPage : UserControl
         {
             ViewModel.IsWorking = true;
             await RecoverBackupAsync(backupPath);
-            ViewModel.IsWorking = false;
-            this.ShowSuccessToast($"操作成功完成。");
+            this.ShowSuccessToast("操作成功完成。");
         }
         catch (Exception exception)
         {
             this.ShowErrorToast("无法恢复备份", exception);
+        }
+        finally
+        {
+            ViewModel.IsWorking = false;
         }
     }
 

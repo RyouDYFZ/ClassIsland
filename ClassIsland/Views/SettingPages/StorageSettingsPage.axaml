@@ -108,12 +108,12 @@
 
             <StackPanel x:Name="IosImportedFilesSettings" IsVisible="False">
                 <Separator Margin="0 16 0 8" />
-                <ci:IconText Glyph="&#xE8B7;" Text="iOS 导入文件" Margin="0 0 0 4" />
+                <ci:IconText Glyph="&#xE8B7;" Text="移动端导入文件" Margin="0 0 0 4" />
                 <controls:FASettingsExpander IconSource="{ci:FluentIconSource &#xE8B7;}"
                                              Header="导入文件副本"
-                                             Description="从“文件”App 选择的内容会复制到 ClassIsland 沙盒，以便导入流程和自定义资源在授权结束后继续读取。"
+                                             Description="从系统文件选择器选取的内容会复制到 ClassIsland 数据目录，以便导入流程和自定义资源在授权结束后继续读取。"
                                              IsExpanded="True">
-                    <controls:FASettingsExpanderItem Content="在“文件”App 中查看…"
+                    <controls:FASettingsExpanderItem Content="在系统文件管理器中查看…"
                                                      Click="ButtonViewImportedFiles_OnClick"
                                                      IsClickEnabled="True"
                                                      ActionIconSource="{ci:FluentIconSource &#xEC2D;}" />

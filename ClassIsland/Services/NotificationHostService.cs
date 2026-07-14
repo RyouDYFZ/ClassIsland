@@ -517,7 +517,28 @@ public class NotificationHostService(SettingsService settingsService, ILogger<No
             EnqueueNotification(request, true);
             PopRequestsToConsumers();
         });
-        request.CompletedToken.Register(() => PlayingTickets.Remove(ticket));
+        request.CompletedToken.Register(() =>
+        {
+            void CleanupCompletedTicket()
+            {
+                PlayingTickets.Remove(ticket);
+                if (request.ChainedHeadRequest == null ||
+                    ReferenceEquals(request.ChainedHeadRequest, request) &&
+                    request.ChainedNextRequest == null)
+                {
+                    PoppedRequests.Remove(request);
+                }
+            }
+
+            if (Dispatcher.UIThread.CheckAccess())
+            {
+                CleanupCompletedTicket();
+            }
+            else
+            {
+                Dispatcher.UIThread.Post(CleanupCompletedTicket);
+            }
+        });
         return ticket;
     }
     

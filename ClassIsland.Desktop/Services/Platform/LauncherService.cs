@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Avalonia.Platform.Storage;
 using ClassIsland.Core;
+using ClassIsland.Core.Helpers;
 using ClassIsland.Platforms.Abstraction;
 using ClassIsland.Platforms.Abstraction.Services;
 
@@ -10,14 +11,15 @@ public class LauncherService : ILauncherService
 {
     public async Task LaunchPath(string path)
     {
+        path = ImportedFileReference.Resolve(path);
         var topLevel = AppBase.Current.PhonyRootWindow;
         if (PlatformServices.FilePickerService.IsBookmark(path))
         {
-            var file = await PlatformServices.FilePickerService.GetFileAsync(path, topLevel) as IStorageItem
-                       ?? await PlatformServices.FilePickerService.GetFolderAsync(path, topLevel);
-            if (file != null)
+            using var item = await PlatformServices.FilePickerService.GetFileAsync(path, topLevel) as IStorageItem
+                             ?? await PlatformServices.FilePickerService.GetFolderAsync(path, topLevel);
+            if (item != null)
             {
-                await topLevel.Launcher.LaunchFileAsync(file);
+                await topLevel.Launcher.LaunchFileAsync(item);
                 return;
             }
         }

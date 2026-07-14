@@ -80,6 +80,11 @@ public class FileFolderService(SettingsService settingsService, ILogger<FileFold
         }
     }
 
+    public static void CopyFolderStrict(string source, string destination, bool overwrite = false)
+    {
+        FileSystemDataTransaction.CopyDirectoryStrict(source, destination, overwrite);
+    }
+
     public async Task ProcessAutoBackupAsync()
     {
         if (!SettingsService.Settings.IsAutoBackupEnabled)
@@ -116,15 +121,15 @@ public class FileFolderService(SettingsService settingsService, ILogger<FileFold
     {
         string[] backupFolders =
         [
-            CommonDirectories.AppConfigPath,
-            "Profiles/",
-            "ImportedFiles/"
+            "Config",
+            "Profiles",
+            "ImportedFiles"
         ];
         string[] backupFiles =
         [
             "Settings.json"
         ];
-        rootPath ??= CommonDirectories.AppRootFolderPath;
+        rootPath = Path.GetFullPath(rootPath ?? CommonDirectories.AppRootFolderPath);
         var backupFolder = Path.Combine(rootPath, "Backups/");
         var backupFilename = string.IsNullOrWhiteSpace(filename) ? $"Backup_{DateTime.Now:yy-MMM-dd_HH-mm-ss}.zip" : filename + ".zip";
         if (isAuto)
@@ -132,38 +137,71 @@ public class FileFolderService(SettingsService settingsService, ILogger<FileFold
             backupFilename = "Auto_" + backupFilename;
         }
 
+        if (!string.Equals(
+                Path.GetFileName(backupFilename),
+                backupFilename,
+                StringComparison.Ordinal))
+        {
+            throw new ArgumentException("备份名称不能包含目录路径。", nameof(filename));
+        }
+
         var backupTarget = Path.Combine(backupFolder, backupFilename);
+        var incompleteBackupTarget = Path.Combine(
+            backupFolder,
+            $".{backupFilename}.{Guid.NewGuid():N}.tmp");
 
         if (!Directory.Exists(backupFolder))
         {
             Directory.CreateDirectory(backupFolder);
         }
+        FileSystemDataTransaction.EnsureDirectoryIsNotLink(backupFolder);
 
         await Task.Run(() =>
         {
-            using var zipStream = new FileStream(backupTarget, FileMode.Create);
-            using var archive = new ZipArchive(zipStream, ZipArchiveMode.Create);
-
-            foreach (var file in backupFiles)
+            try
             {
-                var filePath = Path.Combine(rootPath, file);
-                if (File.Exists(filePath))
+                using (var zipStream = new FileStream(
+                           incompleteBackupTarget,
+                           FileMode.CreateNew,
+                           FileAccess.Write,
+                           FileShare.None))
+                using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Create))
                 {
-                    archive.CreateEntryFromFile(filePath, file);
-                }
-            }
-
-            foreach (var folder in backupFolders)
-            {
-                var folderPath = Path.Combine(rootPath, folder);
-                if (Directory.Exists(folderPath))
-                {
-                    foreach (var file in Directory.EnumerateFiles(folderPath, "*", SearchOption.AllDirectories))
+                    foreach (var file in backupFiles)
                     {
-                        var relativePath = Path.GetRelativePath(rootPath, file);
-                        archive.CreateEntryFromFile(file, relativePath);
+                        var filePath = Path.Combine(rootPath, file);
+                        if (File.Exists(filePath))
+                        {
+                            FileSystemDataTransaction.EnsureFileIsNotLink(filePath);
+                            archive.CreateEntryFromFile(
+                                filePath,
+                                SafeArchiveExtractor.NormalizeFileSystemRelativePath(file));
+                        }
+                    }
+
+                    foreach (var folder in backupFolders)
+                    {
+                        var folderPath = Path.Combine(rootPath, folder);
+                        if (!Directory.Exists(folderPath))
+                        {
+                            continue;
+                        }
+
+                        foreach (var file in FileSystemDataTransaction
+                                     .EnumerateFilesStrict(folderPath))
+                        {
+                            var relativePath = SafeArchiveExtractor.NormalizeFileSystemRelativePath(
+                                Path.GetRelativePath(rootPath, file));
+                            archive.CreateEntryFromFile(file, relativePath);
+                        }
                     }
                 }
+
+                File.Move(incompleteBackupTarget, backupTarget, true);
+            }
+            finally
+            {
+                FileSystemDataTransaction.TryDeleteFile(incompleteBackupTarget);
             }
         });
     }

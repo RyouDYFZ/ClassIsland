@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using ClassIsland.Core;
 using ClassIsland.Core.Abstractions.Controls;
+using ClassIsland.Core.Abstractions.Services;
 using ClassIsland.Core.Abstractions.Services.Management;
 using ClassIsland.Core.Attributes;
 using ClassIsland.Core.Enums.SettingsWindow;
@@ -29,6 +31,16 @@ namespace ClassIsland.Views.SettingPages;
 [SettingsPageInfo("storage", "存储", "\ue6b7", "\ue6b6", SettingsPageCategory.Internal)]
 public partial class StorageSettingsPage : SettingsPageBase
 {
+    private static readonly HashSet<string> ImportedFilesCleanupExcludedDirectories =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "ImportedFiles",
+            "Temp",
+            "Cache",
+            "Logs",
+            "Backups"
+        };
+
     public StorageSettingsViewModel ViewModel { get; } = IAppHost.GetService<StorageSettingsViewModel>();
 
     public ILogger<StorageSettingsPage> Logger => ViewModel.Logger;
@@ -38,7 +50,7 @@ public partial class StorageSettingsPage : SettingsPageBase
         ViewModel.SettingsService.Settings.BackupFilesSize = Helpers.StorageSizeHelper.FormatSize(Helpers.StorageSizeHelper.GetFolderStorageSize(Path.Combine(CommonDirectories.AppRootFolderPath, "Backups/")));
         DataContext = this;
         InitializeComponent();
-        IosImportedFilesSettings.IsVisible = PlatformHelper.IsAppleMobile;
+        IosImportedFilesSettings.IsVisible = PlatformHelper.IsMobile;
     }
 
     private async void ButtonCreateBackup_OnClick(object sender, RoutedEventArgs e)
@@ -92,7 +104,7 @@ public partial class StorageSettingsPage : SettingsPageBase
         }
         catch (Exception exception)
         {
-            Logger.LogError(exception, "无法浏览 iOS 导入文件副本。");
+            Logger.LogError(exception, "无法浏览移动端导入文件副本。");
             this.ShowErrorToast("无法浏览导入文件副本", exception);
         }
     }
@@ -110,56 +122,94 @@ public partial class StorageSettingsPage : SettingsPageBase
 
         try
         {
+            PersistCurrentStateBeforeImportedFilesCleanup();
             Directory.CreateDirectory(CommonDirectories.AppImportedFilesFolderPath);
-            var deleted = await Task.Run(DeleteUnreferencedImportedItems);
-            this.ShowSuccessToast(deleted == 0
-                ? "没有发现未使用的导入文件。"
-                : $"已清理 {deleted} 个未使用的导入文件项目。");
+            var result = await Task.Run(DeleteUnreferencedImportedItems);
+            if (result.UninspectableSource != null)
+            {
+                var relativeSource = Path.GetRelativePath(
+                    CommonDirectories.AppRootFolderPath,
+                    result.UninspectableSource);
+                this.ShowWarningToast(
+                    $"检测到无法安全扫描的配置文件，未执行清理：{relativeSource}");
+            }
+            else
+            {
+                this.ShowSuccessToast(result.DeletedCount == 0
+                    ? "没有发现未使用的导入文件。"
+                    : $"已清理 {result.DeletedCount} 个未使用的导入文件项目。");
+            }
         }
         catch (Exception exception)
         {
-            Logger.LogError(exception, "无法清理 iOS 导入文件副本。");
+            Logger.LogError(exception, "无法清理移动端导入文件副本。");
             this.ShowErrorToast("无法清理导入文件副本", exception);
         }
     }
 
-    private static int DeleteUnreferencedImportedItems()
+    private void PersistCurrentStateBeforeImportedFilesCleanup()
+    {
+        const string note = "清理未使用的移动端导入文件前保存当前配置。";
+        ViewModel.SettingsService.SaveSettings(note);
+        IAppHost.TryGetService<IAutomationService>()?.SaveConfig(note);
+        IAppHost.TryGetService<IProfileService>()?.SaveProfile();
+        IAppHost.TryGetService<IComponentsService>()?.SaveConfig();
+    }
+
+    private static ImportedFilesCleanupResult DeleteUnreferencedImportedItems()
     {
         var importedRoot = Path.GetFullPath(CommonDirectories.AppImportedFilesFolderPath);
+        FileSystemDataTransaction.EnsureDirectoryIsNotLink(importedRoot);
         var candidates = Directory.EnumerateDirectories(importedRoot)
             .Select(path => new
             {
                 Path = path,
-                Marker = ImportedFileReference.Prefix +
-                         Uri.EscapeDataString(Path.GetFileName(path)) + "/"
+                PortableReference = ImportedFileReference.Prefix +
+                                    Uri.EscapeDataString(Path.GetFileName(path)),
+                LegacyMarker = $"/ImportedFiles/{Path.GetFileName(path)}/"
             })
             .ToList();
+        foreach (var candidate in candidates)
+        {
+            FileSystemDataTransaction.EnsureDirectoryIsNotLink(candidate.Path);
+        }
         if (candidates.Count == 0)
         {
-            return 0;
+            return new ImportedFilesCleanupResult(0, null);
         }
 
         var referencedMarkers = new HashSet<string>(StringComparer.Ordinal);
         var searchableExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            ".json", ".yaml", ".yml", ".toml", ".xml", ".txt"
+            ".json", ".json5", ".yaml", ".yml", ".toml", ".xml", ".txt",
+            ".ini", ".cfg", ".conf", ".config", ".properties", ".axaml",
+            ".xaml", ".svg", ".css", ".md", ".resx"
         };
-        foreach (var file in Directory.EnumerateFiles(
-                     CommonDirectories.AppRootFolderPath,
-                     "*",
-                     SearchOption.AllDirectories))
+        var knownBinaryExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico",
+            ".avif", ".heic", ".heif",
+            ".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".mp4",
+            ".mov", ".webm", ".ttf", ".otf", ".woff", ".woff2", ".dll",
+            ".exe", ".so", ".dylib", ".pdb"
+        };
+        foreach (var file in EnumerateImportedFileReferenceSources())
         {
             var fullPath = Path.GetFullPath(file);
-            if (fullPath.StartsWith(importedRoot + Path.DirectorySeparatorChar,
-                    StringComparison.Ordinal) ||
-                !searchableExtensions.Contains(Path.GetExtension(fullPath)))
+            FileSystemDataTransaction.EnsureFileIsNotLink(fullPath);
+            if (!IsSearchableImportedFileReferenceSource(fullPath, searchableExtensions))
             {
-                continue;
-            }
+                if (new FileInfo(fullPath).Length == 0 ||
+                    knownBinaryExtensions.Contains(Path.GetExtension(fullPath)))
+                {
+                    continue;
+                }
 
-            var info = new FileInfo(fullPath);
-            if (info.Length > 16 * 1024 * 1024)
-            {
+                if (IsInsideConfigurationTree(fullPath))
+                {
+                    return new ImportedFilesCleanupResult(0, fullPath);
+                }
+
                 continue;
             }
 
@@ -168,28 +218,117 @@ public partial class StorageSettingsPage : SettingsPageBase
             {
                 text = File.ReadAllText(fullPath);
             }
-            catch
+            catch (Exception exception)
             {
-                continue;
+                throw new IOException(
+                    $"无法读取配置文件，已中止导入文件清理：{fullPath}",
+                    exception);
             }
+
+            var normalizedText = NormalizeReferenceSeparators(text);
 
             foreach (var candidate in candidates)
             {
-                if (!referencedMarkers.Contains(candidate.Marker) &&
-                    text.Contains(candidate.Marker, StringComparison.Ordinal))
+                if (!referencedMarkers.Contains(candidate.PortableReference) &&
+                    (normalizedText.Contains(candidate.PortableReference, StringComparison.Ordinal) ||
+                     normalizedText.Contains(candidate.LegacyMarker, StringComparison.Ordinal)))
                 {
-                    referencedMarkers.Add(candidate.Marker);
+                    referencedMarkers.Add(candidate.PortableReference);
                 }
             }
         }
 
         var deleted = 0;
-        foreach (var candidate in candidates.Where(x => !referencedMarkers.Contains(x.Marker)))
+        foreach (var candidate in candidates.Where(x =>
+                     !referencedMarkers.Contains(x.PortableReference)))
         {
             Directory.Delete(candidate.Path, true);
             deleted++;
         }
 
-        return deleted;
+        return new ImportedFilesCleanupResult(deleted, null);
     }
+
+    private static bool IsInsideConfigurationTree(string path)
+    {
+        return IsSameOrDescendant(path, CommonDirectories.AppConfigPath) ||
+               IsSameOrDescendant(
+                   path,
+                   Path.Combine(CommonDirectories.AppRootFolderPath, "Profiles"));
+    }
+
+    private static bool IsSameOrDescendant(string path, string root)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        return string.Equals(fullPath, fullRoot, comparison) ||
+               fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, comparison);
+    }
+
+    private static bool IsSearchableImportedFileReferenceSource(
+        string path,
+        IReadOnlySet<string> searchableExtensions)
+    {
+        if (searchableExtensions.Contains(Path.GetExtension(path)))
+        {
+            return true;
+        }
+
+        return searchableExtensions.Any(extension =>
+            path.EndsWith(extension + ".bak", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IEnumerable<string> EnumerateImportedFileReferenceSources()
+    {
+        var appRoot = Path.GetFullPath(CommonDirectories.AppRootFolderPath);
+        foreach (var file in Directory.EnumerateFiles(appRoot))
+        {
+            yield return file;
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(appRoot))
+        {
+            if (ImportedFilesCleanupExcludedDirectories.Contains(Path.GetFileName(directory)))
+            {
+                continue;
+            }
+
+            foreach (var file in FileSystemDataTransaction
+                         .EnumerateFilesStrict(directory))
+            {
+                yield return file;
+            }
+        }
+    }
+
+    private static string NormalizeReferenceSeparators(string text)
+    {
+        var result = new StringBuilder(text.Length);
+        var previousWasSeparator = false;
+        foreach (var character in text)
+        {
+            if (character is '/' or '\\')
+            {
+                if (!previousWasSeparator)
+                {
+                    result.Append('/');
+                }
+
+                previousWasSeparator = true;
+                continue;
+            }
+
+            result.Append(character);
+            previousWasSeparator = false;
+        }
+
+        return result.ToString();
+    }
+
+    private sealed record ImportedFilesCleanupResult(
+        int DeletedCount,
+        string? UninspectableSource);
 }

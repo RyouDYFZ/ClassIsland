@@ -9,36 +9,86 @@ public class AvaloniaDefaultPlatformFilePickerService : IPlatformFilePickerServi
 {
     private const string FileBookmarkSchema = "_elysia-bookmark:";
     private const string FolderBookmarkSchema = "_cyrene-bookmark:";
+    private readonly IStorageProvider? _storageProvider;
+
+    /// <summary>
+    /// 使用当前 <see cref="TopLevel"/> 的存储提供方。
+    /// </summary>
+    public AvaloniaDefaultPlatformFilePickerService()
+    {
+    }
+
+    internal AvaloniaDefaultPlatformFilePickerService(IStorageProvider storageProvider)
+    {
+        ArgumentNullException.ThrowIfNull(storageProvider);
+        _storageProvider = storageProvider;
+    }
 
     /// <inheritdoc />
     public virtual async Task<List<string>> OpenFilesPickerAsync(FilePickerOpenOptions options, TopLevel root)
     {
-        var list =  (await root.StorageProvider.OpenFilePickerAsync(options))
+        var list =  (await GetStorageProvider(root).OpenFilePickerAsync(options))
             .ToList();
+        var delegatedFiles = new HashSet<IStorageFile>(ReferenceEqualityComparer.Instance);
         try
         {
-            var result = new List<string>(list.Count);
-            foreach (var file in list)
+            var result = new string?[list.Count];
+            var filesToMaterialize = new List<IStorageFile>();
+            var materializedIndexes = new List<int>();
+            for (var index = 0; index < list.Count; index++)
             {
+                var file = list[index];
                 if (file.TryGetLocalPath() is { } path)
                 {
-                    result.Add(path);
+                    result[index] = path;
                     continue;
                 }
 
                 if (file.CanBookmark)
                 {
-                    result.Add(FileBookmarkSchema + await file.SaveBookmarkAsync());
+                    var bookmark = await file.SaveBookmarkAsync();
+                    if (!string.IsNullOrWhiteSpace(bookmark))
+                    {
+                        result[index] = FileBookmarkSchema + bookmark;
+                        continue;
+                    }
+                }
+
+                filesToMaterialize.Add(file);
+                materializedIndexes.Add(index);
+            }
+
+            if (filesToMaterialize.Count > 0)
+            {
+                delegatedFiles.UnionWith(filesToMaterialize);
+                var materializedPaths = await PlatformFileMaterializationFallback
+                    .MaterializeFilesAsync(filesToMaterialize);
+                if (materializedPaths.Count != materializedIndexes.Count)
+                {
+                    throw new InvalidOperationException(
+                        "平台文件暂存结果与选择项数量不一致。");
+                }
+
+                for (var index = 0; index < materializedPaths.Count; index++)
+                {
+                    result[materializedIndexes[index]] = materializedPaths[index];
                 }
             }
 
-            return result;
+            return result.OfType<string>().ToList();
         }
         finally
         {
-            foreach (var file in list)
+            foreach (var file in list.Where(file => !delegatedFiles.Contains(file)))
             {
-                file.Dispose();
+                try
+                {
+                    file.Dispose();
+                }
+                catch
+                {
+                    // 清理失败不能掩盖原始文件选择异常。
+                }
             }
         }
     }
@@ -47,26 +97,13 @@ public class AvaloniaDefaultPlatformFilePickerService : IPlatformFilePickerServi
     public virtual Task<List<string>> MaterializeFilesAsync(IReadOnlyList<IStorageFile> files)
     {
         ArgumentNullException.ThrowIfNull(files);
-
-        var paths = new List<string>(files.Count);
-        foreach (var file in files)
-        {
-            using (file)
-            {
-                if (file.TryGetLocalPath() is { } path)
-                {
-                    paths.Add(path);
-                }
-            }
-        }
-
-        return Task.FromResult(paths);
+        return PlatformFileMaterializationFallback.MaterializeFilesAsync(files);
     }
 
     /// <inheritdoc />
     public virtual async Task<string?> SaveFilePickerAsync(FilePickerSaveOptions options, TopLevel root)
     {
-        using var file = await root.StorageProvider.SaveFilePickerAsync(options);
+        using var file = await GetStorageProvider(root).SaveFilePickerAsync(options);
         if (file == null)
         {
             return null;
@@ -85,7 +122,10 @@ public class AvaloniaDefaultPlatformFilePickerService : IPlatformFilePickerServi
             return null;
         }
 
-        return FileBookmarkSchema + await file.SaveBookmarkAsync();
+        var bookmark = await file.SaveBookmarkAsync();
+        return string.IsNullOrWhiteSpace(bookmark)
+            ? null
+            : FileBookmarkSchema + bookmark;
     }
 
     /// <inheritdoc />
@@ -98,7 +138,7 @@ public class AvaloniaDefaultPlatformFilePickerService : IPlatformFilePickerServi
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(writer);
 
-        using var file = await root.StorageProvider.SaveFilePickerAsync(options);
+        using var file = await GetStorageProvider(root).SaveFilePickerAsync(options);
         if (file == null)
         {
             return null;
@@ -109,6 +149,7 @@ public class AvaloniaDefaultPlatformFilePickerService : IPlatformFilePickerServi
             if (output.CanSeek)
             {
                 output.SetLength(0);
+                output.Position = 0;
             }
 
             await writer(output);
@@ -120,15 +161,18 @@ public class AvaloniaDefaultPlatformFilePickerService : IPlatformFilePickerServi
             return path;
         }
 
-        return file.CanBookmark
-            ? FileBookmarkSchema + await file.SaveBookmarkAsync()
-            : file.Name;
+        if (file.CanBookmark && await file.SaveBookmarkAsync() is { Length: > 0 } bookmark)
+        {
+            return FileBookmarkSchema + bookmark;
+        }
+
+        return file.Name;
     }
 
     /// <inheritdoc />
     public virtual async Task<List<string>> OpenFoldersPickerAsync(FolderPickerOpenOptions options, TopLevel root)
     {
-        var list = await root.StorageProvider.OpenFolderPickerAsync(options);
+        var list = await GetStorageProvider(root).OpenFolderPickerAsync(options);
         try
         {
             var result = new List<string>(list.Count);
@@ -142,7 +186,11 @@ public class AvaloniaDefaultPlatformFilePickerService : IPlatformFilePickerServi
 
                 if (folder.CanBookmark)
                 {
-                    result.Add(FolderBookmarkSchema + await folder.SaveBookmarkAsync());
+                    var bookmark = await folder.SaveBookmarkAsync();
+                    if (!string.IsNullOrWhiteSpace(bookmark))
+                    {
+                        result.Add(FolderBookmarkSchema + bookmark);
+                    }
                 }
             }
 
@@ -150,10 +198,7 @@ public class AvaloniaDefaultPlatformFilePickerService : IPlatformFilePickerServi
         }
         finally
         {
-            foreach (var folder in list)
-            {
-                folder.Dispose();
-            }
+            DisposeItems(list, 0);
         }
     }
 
@@ -161,29 +206,50 @@ public class AvaloniaDefaultPlatformFilePickerService : IPlatformFilePickerServi
     public virtual async Task<IStorageFile?> GetFileAsync(string path, TopLevel root)
     {
         if (path.StartsWith(FileBookmarkSchema) &&
-            await root.StorageProvider.OpenFileBookmarkAsync(path[FileBookmarkSchema.Length..]) is {} bookmarkFile)
+            await GetStorageProvider(root).OpenFileBookmarkAsync(path[FileBookmarkSchema.Length..]) is {} bookmarkFile)
         {
             return bookmarkFile;
         }
 
-        return await root.StorageProvider.TryGetFileFromPathAsync(path);
+        return await GetStorageProvider(root).TryGetFileFromPathAsync(path);
     }
 
     /// <inheritdoc />
     public virtual async Task<IStorageFolder?> GetFolderAsync(string path, TopLevel root)
     {
         if (path.StartsWith(FolderBookmarkSchema) &&
-            await root.StorageProvider.OpenFolderBookmarkAsync(path[FolderBookmarkSchema.Length..]) is {} bookmarkFolder)
+            await GetStorageProvider(root).OpenFolderBookmarkAsync(path[FolderBookmarkSchema.Length..]) is {} bookmarkFolder)
         {
             return bookmarkFolder;
         }
 
-        return await root.StorageProvider.TryGetFolderFromPathAsync(path);
+        return await GetStorageProvider(root).TryGetFolderFromPathAsync(path);
     }
 
     /// <inheritdoc />
-    public virtual bool IsBookmark(string path)
+    public virtual bool IsBookmark(string? path)
     {
-        return path.StartsWith(FileBookmarkSchema) || path.StartsWith(FolderBookmarkSchema);
+        return !string.IsNullOrEmpty(path) &&
+               (path.StartsWith(FileBookmarkSchema, StringComparison.Ordinal) ||
+                path.StartsWith(FolderBookmarkSchema, StringComparison.Ordinal));
+    }
+
+    private IStorageProvider GetStorageProvider(TopLevel root) =>
+        _storageProvider ?? root.StorageProvider;
+
+    private static void DisposeItems<T>(IReadOnlyList<T> items, int startIndex)
+        where T : IStorageItem
+    {
+        for (var index = startIndex; index < items.Count; index++)
+        {
+            try
+            {
+                items[index].Dispose();
+            }
+            catch
+            {
+                // 清理失败不能掩盖原始文件选择异常。
+            }
+        }
     }
 }

@@ -25,11 +25,21 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="..\ClassIsland.iOS\Services\Notifications\IosLessonNotificationRequest.cs"
-             Link="iOS\IosLessonNotificationRequest.cs" />
-    <Compile Include="..\ClassIsland.iOS\Services\Notifications\IosLessonNotificationScheduleSelector.cs"
-             Link="iOS\IosLessonNotificationScheduleSelector.cs" />
-    <Compile Include="..\ClassIsland.iOS\Services\Notifications\IosNotificationSchedulingPolicy.cs"
-             Link="iOS\IosNotificationSchedulingPolicy.cs" />
+    <Compile Include="..\ClassIsland.Core\CommonDirectories.cs"
+             Link="Core\CommonDirectories.cs" />
+    <Compile Include="..\ClassIsland.Core\Helpers\ImportedFileReference.cs"
+             Link="Core\ImportedFileReference.cs" />
+    <Compile Include="..\ClassIsland.Core\Helpers\PersistentImportedFileService.cs"
+             Link="Core\PersistentImportedFileService.cs" />
+    <Compile Include="..\ClassIsland.Android\Services\Platform\AndroidPlatformFilePickerService.cs"
+             Link="Android\AndroidPlatformFilePickerService.cs" />
+    <Compile Include="..\ClassIsland.iOS\Services\Platform\IosPlatformFilePickerService.cs"
+             Link="iOS\IosPlatformFilePickerService.cs" />
+    <Compile Include="..\ClassIsland\Services\SafeArchiveExtractor.cs"
+             Link="App\SafeArchiveExtractor.cs" />
+    <Compile Include="..\ClassIsland\Services\FileSystemDataTransaction.cs"
+             Link="App\FileSystemDataTransaction.cs" />
+    <Compile Include="..\ClassIsland\Services\StagedDataImportValidator.cs"
+             Link="App\StagedDataImportValidator.cs" />
   </ItemGroup>
 </Project>

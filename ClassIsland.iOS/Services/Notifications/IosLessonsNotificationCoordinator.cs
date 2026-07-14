@@ -21,11 +21,13 @@ internal sealed class IosLessonsNotificationCoordinator : IDisposable
     private static readonly TimeSpan RefreshDebounceInterval = TimeSpan.FromMilliseconds(300);
     private static readonly TimeSpan AttachedSettingsScanInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan RollingScheduleRefreshInterval = TimeSpan.FromHours(6);
+    private static readonly TimeSpan FailedRefreshRetryInterval = TimeSpan.FromSeconds(30);
 
     private readonly IosNotificationAuthorizationService _authorizationService;
     private readonly CancellationTokenSource _cancellation = new();
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
-    private readonly IosLessonNotificationScheduler _scheduler = new();
+    private readonly IosNotificationMutationGate _notificationMutationGate = new();
+    private readonly IosLessonNotificationScheduler _scheduler;
     private readonly DispatcherTimer _refreshDebounceTimer;
     private readonly DispatcherTimer _attachedSettingsScanTimer;
     private readonly DispatcherTimer _rollingScheduleRefreshTimer;
@@ -42,11 +44,12 @@ internal sealed class IosLessonsNotificationCoordinator : IDisposable
     private SettingsService? _settingsService;
     private INotificationHostService? _notificationHostService;
     private IosLessonNotificationScheduleFactory? _scheduleFactory;
-    private readonly IosNotificationQueueConsumer _queueConsumer = new();
+    private IosNotificationQueueConsumer? _queueConsumer;
     private IReadOnlyList<IosLessonNotificationRequest>? _lastRequests;
     private bool? _lastAuthorizationState;
     private bool _isScheduleSynchronized;
     private int _refreshPending;
+    private int _refreshRetryScheduled;
     private bool _isStarted;
     private bool _isWorkStarted;
 
@@ -54,6 +57,7 @@ internal sealed class IosLessonsNotificationCoordinator : IDisposable
         IosNotificationAuthorizationService authorizationService)
     {
         _authorizationService = authorizationService;
+        _scheduler = new IosLessonNotificationScheduler(_notificationMutationGate);
         _refreshDebounceTimer = new DispatcherTimer
         {
             Interval = RefreshDebounceInterval
@@ -113,6 +117,12 @@ internal sealed class IosLessonsNotificationCoordinator : IDisposable
             _notificationHostService,
             _settingsService,
             _exactTimeService);
+        _queueConsumer = new IosNotificationQueueConsumer(
+            _authorizationService,
+            _notificationHostService,
+            _settingsService,
+            _exactTimeService,
+            _notificationMutationGate);
         _notificationHostService.RegisterNotificationConsumer(
             _queueConsumer,
             int.MinValue);
@@ -158,9 +168,16 @@ internal sealed class IosLessonsNotificationCoordinator : IDisposable
         {
             // 应用正在停止。
         }
+        catch (IosNotificationSynchronizationRollbackException exception)
+        {
+            Console.Error.WriteLine(
+                $"同步 iOS/iPadOS 课程通知失败，且无法恢复上一份排程：{exception}");
+            ScheduleRefreshRetry();
+        }
         catch (Exception exception)
         {
             Console.Error.WriteLine($"同步 iOS/iPadOS 课程通知时发生异常：{exception}");
+            ScheduleRefreshRetry();
         }
         finally
         {
@@ -184,38 +201,102 @@ internal sealed class IosLessonsNotificationCoordinator : IDisposable
             return;
         }
 
-        var schedulingEnabled = scheduleFactory.IsSchedulingEnabled;
-        IReadOnlyList<IosLessonNotificationRequest> candidateRequests = schedulingEnabled
-            ? scheduleFactory.Create()
-            : Array.Empty<IosLessonNotificationRequest>();
-        var shouldUseSystemNotifications = candidateRequests.Count > 0;
-        var authorized = shouldUseSystemNotifications &&
-                         await _authorizationService.RequestAuthorizationIfNeededAsync();
-        IReadOnlyList<IosLessonNotificationRequest> requests = authorized
-            ? candidateRequests
-            : Array.Empty<IosLessonNotificationRequest>();
-        if (_isScheduleSynchronized &&
-            _lastAuthorizationState == authorized &&
-            _lastRequests != null &&
-            _lastRequests.SequenceEqual(requests))
+        var queueConsumer = _queueConsumer;
+        queueConsumer?.BeginScheduleSynchronization();
+        try
+        {
+            var schedulingEnabled = scheduleFactory.IsSchedulingEnabled;
+            IReadOnlyList<IosLessonNotificationRequest> candidateRequests = schedulingEnabled
+                ? scheduleFactory.Create()
+                : Array.Empty<IosLessonNotificationRequest>();
+            var shouldUseSystemNotifications = candidateRequests.Count > 0;
+            var authorized = shouldUseSystemNotifications &&
+                             await _authorizationService.RequestAuthorizationIfNeededAsync();
+            IReadOnlyList<IosLessonNotificationRequest> requests = authorized
+                ? candidateRequests
+                : Array.Empty<IosLessonNotificationRequest>();
+            if (_isScheduleSynchronized &&
+                _lastAuthorizationState == authorized &&
+                _lastRequests != null &&
+                _lastRequests.SequenceEqual(requests))
+            {
+                Interlocked.Exchange(ref _refreshRetryScheduled, 0);
+                return;
+            }
+
+            _isScheduleSynchronized = false;
+            IReadOnlyList<IosLessonNotificationRequest> synchronizedRequests;
+            try
+            {
+                synchronizedRequests = await _scheduler.SynchronizeAsync(
+                    requests,
+                    confirmedRequests =>
+                        queueConsumer?.SetScheduledRequests(confirmedRequests),
+                    _cancellation.Token);
+            }
+            catch (IosNotificationSynchronizationRollbackException)
+            {
+                // 原生回滚失败后，旧快照也不再可信。必须在解除 pending、
+                // 唤醒票据处理前清空，避免将未实际排程的提醒静默完成。
+                queueConsumer?.ClearScheduledRequests();
+                throw;
+            }
+
+            _isScheduleSynchronized = true;
+            _lastAuthorizationState = authorized;
+            _lastRequests = synchronizedRequests.ToArray();
+            if (requests.SequenceEqual(synchronizedRequests))
+            {
+                Interlocked.Exchange(ref _refreshRetryScheduled, 0);
+            }
+            else
+            {
+                // Native capacity may be temporarily consumed by an immediate
+                // fallback notification. Retry after it has left the pending set.
+                ScheduleRefreshRetry();
+            }
+            if (shouldUseSystemNotifications && !authorized)
+            {
+                Console.WriteLine("iOS/iPadOS 通知权限未授予。可在系统设置中手动启用。");
+            }
+        }
+        finally
+        {
+            queueConsumer?.EndScheduleSynchronization();
+        }
+    }
+
+    private void ScheduleRefreshRetry()
+    {
+        if (_cancellation.IsCancellationRequested ||
+            Interlocked.CompareExchange(ref _refreshRetryScheduled, 1, 0) != 0)
         {
             return;
         }
 
-        _isScheduleSynchronized = false;
-        _queueConsumer.ClearScheduledRequests();
-        var synchronizedRequests = await _scheduler.SynchronizeAsync(
-            requests,
-            _cancellation.Token);
+        _ = RetryRefreshAsync();
+    }
 
-        _queueConsumer.SetScheduledRequests(synchronizedRequests);
-        _isScheduleSynchronized = true;
-        _lastAuthorizationState = authorized;
-        _lastRequests = requests.ToArray();
-        if (shouldUseSystemNotifications && !authorized)
+    private async Task RetryRefreshAsync()
+    {
+        try
         {
-            Console.WriteLine("iOS/iPadOS 通知权限未授予。可在系统设置中手动启用。");
+            await Task.Delay(FailedRefreshRetryInterval, _cancellation.Token)
+                .ConfigureAwait(false);
         }
+        catch (OperationCanceledException)
+        {
+            Interlocked.Exchange(ref _refreshRetryScheduled, 0);
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _refreshRetryScheduled, 0) == 0 ||
+            _cancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(QueueRefresh);
     }
 
     private void RebuildChangeSubscriptions()
@@ -503,6 +584,7 @@ internal sealed class IosLessonsNotificationCoordinator : IDisposable
 
         AppBase.Current.AppStarted -= OnAppStarted;
         _cancellation.Cancel();
+        Interlocked.Exchange(ref _refreshRetryScheduled, 0);
         _refreshDebounceTimer.Stop();
         _refreshDebounceTimer.Tick -= RefreshDebounceTimerOnTick;
         _attachedSettingsScanTimer.Stop();
@@ -517,8 +599,12 @@ internal sealed class IosLessonsNotificationCoordinator : IDisposable
         {
             _exactTimeService.PropertyChanged -= ExactTimeServiceOnPropertyChanged;
         }
-        _notificationHostService?.UnregisterNotificationConsumer(_queueConsumer);
-        _queueConsumer.ClearScheduledRequests();
+        if (_queueConsumer != null)
+        {
+            _queueConsumer.Stop();
+            _notificationHostService?.UnregisterNotificationConsumer(_queueConsumer);
+            _queueConsumer = null;
+        }
         _isScheduleSynchronized = false;
         DetachChangeSubscriptions();
         DisposeObserver(ref _foregroundObserver);

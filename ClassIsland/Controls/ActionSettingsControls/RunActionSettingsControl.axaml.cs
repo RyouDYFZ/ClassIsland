@@ -12,6 +12,7 @@ using ClassIsland.Core.Abstractions.Controls;
 using ClassIsland.Core.Helpers.UI;
 using ClassIsland.Models.Actions;
 using ClassIsland.Platforms.Abstraction;
+using ClassIsland.Platforms.Abstraction.Services;
 using static ClassIsland.Models.Actions.RunActionSettings.RunActionRunType;
 namespace ClassIsland.Controls.ActionSettingsControls;
 
@@ -80,18 +81,30 @@ public partial class RunActionSettingsControl : ActionSettingsControlBase<RunAct
     async void FileSelectorButton_OnClick(object? sender, RoutedEventArgs e)
     {
         var storageProvider = AppBase.Current.GetRootWindow().StorageProvider;
+        var root = TopLevel.GetTopLevel(this) ?? AppBase.Current.GetRootWindow();
+        using var suggestedStartLocation = string.IsNullOrWhiteSpace(Settings.Value) ||
+                                           PlatformServices.FilePickerService.IsBookmark(Settings.Value)
+            ? null
+            : await storageProvider.TryGetFolderFromPathAsync(Settings.Value);
 
         // 启动异步操作以打开对话框。
         if (!IsFolder)
         {
             PopupHelper.DisableAllPopups();
-            var files = await PlatformServices.FilePickerService.OpenFilesPickerAsync(new()
+            List<string> files;
+            try
             {
-                SuggestedStartLocation = await storageProvider.TryGetFolderFromPathAsync(Settings.Value),
-                FileTypeFilter = FileTypes,
-                SuggestedFileName = Settings.Value,
-            }, TopLevel.GetTopLevel(this) ?? AppBase.Current.GetRootWindow());
-            PopupHelper.RestoreAllPopups();
+                files = await PlatformServices.FilePickerService.OpenPersistentFilesPickerAsync(new()
+                {
+                    SuggestedStartLocation = suggestedStartLocation,
+                    FileTypeFilter = FileTypes,
+                    SuggestedFileName = Settings.Value,
+                }, root);
+            }
+            finally
+            {
+                PopupHelper.RestoreAllPopups();
+            }
 
             if (files.Count > 0)
             {
@@ -101,12 +114,19 @@ public partial class RunActionSettingsControl : ActionSettingsControlBase<RunAct
         else
         {
             PopupHelper.DisableAllPopups();
-            var folders = await PlatformServices.FilePickerService.OpenFoldersPickerAsync(new()
+            List<string> folders;
+            try
             {
-                SuggestedStartLocation = await storageProvider.TryGetFolderFromPathAsync(Settings.Value),
-                SuggestedFileName = Settings.Value
-            }, TopLevel.GetTopLevel(this) ?? AppBase.Current.GetRootWindow());
-            PopupHelper.RestoreAllPopups();
+                folders = await PlatformServices.FilePickerService.OpenPersistentFoldersPickerAsync(new()
+                {
+                    SuggestedStartLocation = suggestedStartLocation,
+                    SuggestedFileName = Settings.Value
+                }, root);
+            }
+            finally
+            {
+                PopupHelper.RestoreAllPopups();
+            }
 
             if (folders.Count > 0)
             {

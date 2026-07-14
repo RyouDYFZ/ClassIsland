@@ -280,7 +280,7 @@ private actor ClassIslandLiveActivityCoordinator {
             switch activity.activityState {
             case .active, .stale:
                 return true
-            case .dismissed, .ended:
+            case .pending, .dismissed, .ended:
                 return false
             @unknown default:
                 return false
@@ -289,7 +289,7 @@ private actor ClassIslandLiveActivityCoordinator {
             switch activity.activityState {
             case .active:
                 return true
-            case .dismissed, .ended:
+            case .pending, .stale, .dismissed, .ended:
                 return false
             @unknown default:
                 return false

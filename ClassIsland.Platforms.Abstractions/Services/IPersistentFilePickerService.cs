@@ -14,6 +14,18 @@ public interface IPersistentFilePickerService
     Task<List<string>> OpenPersistentFilesPickerAsync(
         FilePickerOpenOptions options,
         TopLevel root);
+
+    /// <summary>
+    /// 选择文件夹并返回适合长期保存的路径或平台引用。
+    /// </summary>
+    Task<List<string>> OpenPersistentFoldersPickerAsync(
+        FolderPickerOpenOptions options,
+        TopLevel root)
+    {
+        return this is IPlatformFilePickerService platformService
+            ? platformService.OpenFoldersPickerAsync(options, root)
+            : throw new NotSupportedException("持久文件选择器未提供平台文件夹选择能力。");
+    }
 }
 
 /// <summary>
@@ -33,5 +45,19 @@ public static class PersistentFilePickerServiceExtensions
         return service is IPersistentFilePickerService persistentService
             ? persistentService.OpenPersistentFilesPickerAsync(options, root)
             : service.OpenFilesPickerAsync(options, root);
+    }
+
+    /// <summary>
+    /// 在平台支持时获取持久文件夹引用；旧平台实现自动回退到普通文件夹选择。
+    /// </summary>
+    public static Task<List<string>> OpenPersistentFoldersPickerAsync(
+        this IPlatformFilePickerService service,
+        FolderPickerOpenOptions options,
+        TopLevel root)
+    {
+        ArgumentNullException.ThrowIfNull(service);
+        return service is IPersistentFilePickerService persistentService
+            ? persistentService.OpenPersistentFoldersPickerAsync(options, root)
+            : service.OpenFoldersPickerAsync(options, root);
     }
 }

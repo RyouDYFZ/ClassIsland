@@ -22,7 +22,6 @@ internal sealed class IosLessonNotificationScheduleFactory(
     IExactTimeService exactTimeService)
 {
     internal const int MaximumPendingNotifications = 60;
-    private const int MinimumPlanningHorizonDays = 7;
     private const int MaximumPlanningHorizonDays = 60;
 
     private static readonly Guid ProviderGuid =
@@ -77,13 +76,6 @@ internal sealed class IosLessonNotificationScheduleFactory(
                 logicalNow,
                 systemNow,
                 providerSettings);
-
-            if (dayOffset + 1 >= MinimumPlanningHorizonDays &&
-                requests.Count(x => x.FireAt > systemNow.AddSeconds(1)) >=
-                MaximumPendingNotifications)
-            {
-                break;
-            }
         }
 
         return IosLessonNotificationScheduleSelector.Select(
@@ -120,7 +112,9 @@ internal sealed class IosLessonNotificationScheduleFactory(
                 nextItem,
                 classPlan,
                 timeLayout);
-        IClassNotificationSettings effectiveSettings = attachedSettings ?? ProviderSettings;
+        IClassNotificationSettings effectiveSettings = attachedSettings is not null
+            ? attachedSettings
+            : ProviderSettings;
         var prepareDelivery = GetDeliveryOptions(
             ClassNotificationProvider.PrepareOnClassChannelId);
         var prepareDeltaSeconds = attachedSettings?.ClassPreparingDeltaTime ??
@@ -246,7 +240,8 @@ internal sealed class IosLessonNotificationScheduleFactory(
                         $"下节课：{subjectText}，{FormatTime(lesson.Item.StartTime)} 开始。"),
                     IosNotificationSchedulingPolicy.PrepareOnClassChannelId,
                     prepareDelivery.PlaySound,
-                    isCatchUp));
+                    isCatchUp,
+                    identifierPrefix));
             }
 
             var onClassDelivery = GetDeliveryOptions(
@@ -260,7 +255,8 @@ internal sealed class IosLessonNotificationScheduleFactory(
                     EnsureText(effectiveSettings.ClassOnMaskText, "上课"),
                     $"{subjectText} · {FormatTime(lesson.Item.StartTime)}–{FormatTime(lesson.Item.EndTime)}",
                     IosNotificationSchedulingPolicy.OnClassChannelId,
-                    onClassDelivery.PlaySound));
+                    onClassDelivery.PlaySound,
+                    ChainId: identifierPrefix));
             }
         }
 

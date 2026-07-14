@@ -45,6 +45,7 @@ internal sealed class LessonsLiveActivityCoordinator(
     private bool _isStarted;
     private bool _isWorkStarted;
     private int _isPublicationPaused;
+    private int _isLessonsRefreshDispatchQueued;
     private int _isStopping;
 
     public void Start()
@@ -112,7 +113,8 @@ internal sealed class LessonsLiveActivityCoordinator(
         QueueRefresh();
     }
 
-    private void OnLessonsStateChanged(object? sender, EventArgs e) => QueueRefresh();
+    private void OnLessonsStateChanged(object? sender, EventArgs e) =>
+        QueueLessonsRefresh();
 
     private void OnLessonsPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -125,8 +127,26 @@ internal sealed class LessonsLiveActivityCoordinator(
             nameof(ILessonsService.IsClassPlanEnabled) or
             nameof(ILessonsService.IsClassPlanLoaded))
         {
-            QueueRefresh();
+            QueueLessonsRefresh();
         }
+    }
+
+    private void QueueLessonsRefresh()
+    {
+        if (Volatile.Read(ref _isStopping) != 0 ||
+            Interlocked.Exchange(ref _isLessonsRefreshDispatchQueued, 1) != 0)
+        {
+            return;
+        }
+
+        // LessonsService updates state, subject and layout item sequentially. Defer
+        // one dispatcher turn so a Live Activity snapshot never observes that batch
+        // halfway through.
+        Dispatcher.UIThread.Post(() =>
+        {
+            Interlocked.Exchange(ref _isLessonsRefreshDispatchQueued, 0);
+            QueueRefresh();
+        });
     }
 
     private void OnRefreshTimer(object? state)
@@ -500,6 +520,8 @@ internal sealed class LessonsLiveActivityCoordinator(
             return;
         }
 
+        Interlocked.Exchange(ref _isStopping, 1);
+
         AppBase.Current.AppStarted -= OnAppStarted;
         if (_lessonsService != null)
         {
@@ -527,7 +549,6 @@ internal sealed class LessonsLiveActivityCoordinator(
             _backgroundObserver = null;
         }
 
-        Interlocked.Exchange(ref _isStopping, 1);
         _cancellation.Cancel();
         // 后台刷新此时可能仍在 finally 中释放信号量。同步对象不持有外部资源，
         // 交由 GC 回收可避免停止阶段的 Dispose/Release 竞态。

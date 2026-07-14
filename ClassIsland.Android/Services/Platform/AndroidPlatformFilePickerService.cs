@@ -5,15 +5,15 @@ using ClassIsland.Core.Helpers;
 using ClassIsland.Platforms.Abstraction.Services;
 using ClassIsland.Platforms.Abstraction.Stubs.Services;
 
-namespace ClassIsland.iOS.Services.Platform;
+namespace ClassIsland.Android.Services.Platform;
 
 /// <summary>
-/// 在 security-scoped resource 有效期间将选择内容暂存到应用沙盒。
+/// 将 Android SAF 内容复制到应用可持续访问的本地目录。
 /// </summary>
-internal sealed class IosPlatformFilePickerService : AvaloniaDefaultPlatformFilePickerService,
+internal sealed class AndroidPlatformFilePickerService : AvaloniaDefaultPlatformFilePickerService,
     IPersistentFilePickerService
 {
-    private const string TemporaryPickerFolderName = "iOSFilePicker";
+    private const string TemporaryPickerFolderName = "AndroidFilePicker";
     private static readonly TimeSpan TemporaryItemRetention = TimeSpan.FromDays(7);
     private int _temporaryItemsCleaned;
 
@@ -45,7 +45,6 @@ internal sealed class IosPlatformFilePickerService : AvaloniaDefaultPlatformFile
         IReadOnlyList<IStorageFile> files)
     {
         ArgumentNullException.ThrowIfNull(files);
-
         return CreateTemporaryMaterializer().MaterializeFilesAsync(files);
     }
 
@@ -102,9 +101,7 @@ internal sealed class IosPlatformFilePickerService : AvaloniaDefaultPlatformFile
         return base.GetFolderAsync(path, root);
     }
 
-    public override bool IsBookmark(string? path)
-    {
-        return path?.StartsWith(ImportedFileReference.Prefix, StringComparison.Ordinal) == true ||
-               base.IsBookmark(path);
-    }
+    public override bool IsBookmark(string? path) =>
+        path?.StartsWith(ImportedFileReference.Prefix, StringComparison.Ordinal) == true ||
+        base.IsBookmark(path);
 }

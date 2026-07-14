@@ -25,6 +25,7 @@ public class Application : AvaloniaAndroidApplication<App>
     protected override AppBuilder CustomizeAppBuilder(AppBuilder builder)
     {
         PlatformServices.AppLifetimeService = new AndroidAppLifetimeService();
+        PlatformServices.FilePickerService = new AndroidPlatformFilePickerService();
         PlatformServices.LauncherService = new LauncherService();
 
         var restartParameters = MainActivity.Current?.TryGetTarget(out var mainActivity) == true

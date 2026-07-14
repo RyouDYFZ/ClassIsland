@@ -25,20 +25,7 @@ public interface IPlatformFilePickerService
     Task<List<string>> MaterializeFilesAsync(IReadOnlyList<IStorageFile> files)
     {
         ArgumentNullException.ThrowIfNull(files);
-
-        var paths = new List<string>(files.Count);
-        foreach (var file in files)
-        {
-            using (file)
-            {
-                if (file.TryGetLocalPath() is { } path)
-                {
-                    paths.Add(path);
-                }
-            }
-        }
-
-        return Task.FromResult(paths);
+        return PlatformFileMaterializationFallback.MaterializeFilesAsync(files);
     }
 
     /// <summary>
@@ -122,6 +109,133 @@ public interface IPlatformFilePickerService
     /// </summary>
     /// <param name="path">文件路径或书签</param>
     /// <returns>是否是书签</returns>
-    bool IsBookmark(string path) => false;
+    bool IsBookmark(string? path) => false;
 
+}
+
+/// <summary>
+/// 为平台文件选择器实现提供兼容的本地路径物化行为。
+/// </summary>
+internal static class PlatformFileMaterializationFallback
+{
+    private const string TemporaryMaterializationFolderName = "ClassIslandFilePicker";
+    private static readonly TimeSpan TemporaryItemRetention = TimeSpan.FromDays(7);
+    private static int _temporaryItemsCleaned;
+
+    public static Task<List<string>> MaterializeFilesAsync(
+        IReadOnlyList<IStorageFile> files)
+    {
+        ArgumentNullException.ThrowIfNull(files);
+        return MaterializeFilesCoreAsync(files);
+    }
+
+    private static async Task<List<string>> MaterializeFilesCoreAsync(
+        IReadOnlyList<IStorageFile> files)
+    {
+        var paths = new string?[files.Count];
+        var nonLocalFiles = new List<IStorageFile>();
+        var nonLocalIndexes = new List<int>();
+        var nextItemIndex = 0;
+        try
+        {
+            for (var index = 0; index < files.Count; index++)
+            {
+                var file = files[index];
+                nextItemIndex = index;
+                if (file.TryGetLocalPath() is { } path)
+                {
+                    paths[index] = path;
+                    file.Dispose();
+                }
+                else
+                {
+                    nonLocalFiles.Add(file);
+                    nonLocalIndexes.Add(index);
+                }
+
+                nextItemIndex = index + 1;
+            }
+        }
+        catch
+        {
+            DisposeItems(nonLocalFiles, 0);
+            DisposeItems(files, nextItemIndex);
+            throw;
+        }
+
+        if (nonLocalFiles.Count > 0)
+        {
+            StorageItemMaterializer materializer;
+            try
+            {
+                materializer = CreateTemporaryMaterializer();
+            }
+            catch
+            {
+                DisposeItems(nonLocalFiles, 0);
+                throw;
+            }
+
+            var materializedPaths = await materializer.MaterializeFilesAsync(nonLocalFiles);
+            if (materializedPaths.Count != nonLocalIndexes.Count)
+            {
+                DeleteMaterializedItems(materializedPaths);
+                throw new InvalidOperationException("平台文件暂存结果与选择项数量不一致。");
+            }
+
+            for (var index = 0; index < materializedPaths.Count; index++)
+            {
+                paths[nonLocalIndexes[index]] = materializedPaths[index];
+            }
+        }
+
+        return paths.OfType<string>().ToList();
+    }
+
+    private static StorageItemMaterializer CreateTemporaryMaterializer()
+    {
+        var materializer = new StorageItemMaterializer(Path.Combine(
+            Path.GetTempPath(),
+            TemporaryMaterializationFolderName));
+        if (Interlocked.Exchange(ref _temporaryItemsCleaned, 1) == 0)
+        {
+            materializer.DeleteOperationsOlderThan(TemporaryItemRetention);
+        }
+
+        return materializer;
+    }
+
+    private static void DeleteMaterializedItems(IEnumerable<string> paths)
+    {
+        foreach (var directory in paths
+                     .Select(Path.GetDirectoryName)
+                     .OfType<string>()
+                     .Distinct(StringComparer.Ordinal))
+        {
+            try
+            {
+                Directory.Delete(directory, true);
+            }
+            catch
+            {
+                // 保留结果数量不一致异常。
+            }
+        }
+    }
+
+    private static void DisposeItems<T>(IReadOnlyList<T> items, int startIndex)
+        where T : IStorageItem
+    {
+        for (var index = startIndex; index < items.Count; index++)
+        {
+            try
+            {
+                items[index].Dispose();
+            }
+            catch
+            {
+                // 清理失败不能掩盖原始物化异常。
+            }
+        }
+    }
 }

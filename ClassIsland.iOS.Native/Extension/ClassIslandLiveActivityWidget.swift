@@ -254,11 +254,12 @@ private extension ClassIslandActivityAttributes.ContentState {
     }
 }
 
-private extension ActivityViewContext {
+private extension ActivityViewContext where Attributes == ClassIslandActivityAttributes {
     var classIslandIsStale: Bool {
+        let hasPassedEndTime = state.endTime.map { Date() >= $0 } ?? false
         if #available(iOS 16.2, *) {
-            return isStale
+            return isStale || hasPassedEndTime
         }
-        return false
+        return hasPassedEndTime
     }
 }

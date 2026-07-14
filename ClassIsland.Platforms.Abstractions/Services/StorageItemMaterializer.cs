@@ -19,12 +19,16 @@ internal sealed class StorageItemMaterializer(string stagingRoot)
             return [];
         }
 
-        var operationDirectory = CreateOperationDirectory();
+        string? operationDirectory = null;
+        var nextItemIndex = 0;
         var result = new List<string>(files.Count);
         try
         {
-            foreach (var file in files)
+            operationDirectory = CreateOperationDirectory();
+            for (var index = 0; index < files.Count; index++)
             {
+                var file = files[index];
+                nextItemIndex = index + 1;
                 using (file)
                 {
                     result.Add(await CopyFileAsync(file, operationDirectory, cancellationToken));
@@ -35,8 +39,15 @@ internal sealed class StorageItemMaterializer(string stagingRoot)
         }
         catch
         {
-            TryDeleteDirectory(operationDirectory);
+            if (operationDirectory != null)
+            {
+                TryDeleteDirectory(operationDirectory);
+            }
             throw;
+        }
+        finally
+        {
+            DisposeRemainingItems(files, nextItemIndex);
         }
     }
 
@@ -50,12 +61,16 @@ internal sealed class StorageItemMaterializer(string stagingRoot)
             return [];
         }
 
-        var operationDirectory = CreateOperationDirectory();
+        string? operationDirectory = null;
+        var nextItemIndex = 0;
         var result = new List<string>(folders.Count);
         try
         {
-            foreach (var folder in folders)
+            operationDirectory = CreateOperationDirectory();
+            for (var index = 0; index < folders.Count; index++)
             {
+                var folder = folders[index];
+                nextItemIndex = index + 1;
                 using (folder)
                 {
                     var destination = GetUniquePath(
@@ -71,8 +86,15 @@ internal sealed class StorageItemMaterializer(string stagingRoot)
         }
         catch
         {
-            TryDeleteDirectory(operationDirectory);
+            if (operationDirectory != null)
+            {
+                TryDeleteDirectory(operationDirectory);
+            }
             throw;
+        }
+        finally
+        {
+            DisposeRemainingItems(folders, nextItemIndex);
         }
     }
 
@@ -233,7 +255,25 @@ internal sealed class StorageItemMaterializer(string stagingRoot)
         }
         catch
         {
-            // 保留原始导入异常；残留内容可由用户在 iOS 存储设置中清理。
+            // 保留原始导入异常；残留内容可由后续临时目录或导入文件清理处理。
+        }
+    }
+
+    private static void DisposeRemainingItems<T>(
+        IReadOnlyList<T> items,
+        int startIndex)
+        where T : IStorageItem
+    {
+        for (var index = startIndex; index < items.Count; index++)
+        {
+            try
+            {
+                items[index].Dispose();
+            }
+            catch
+            {
+                // 清理失败不能掩盖原始复制异常。
+            }
         }
     }
 }

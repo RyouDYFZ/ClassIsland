@@ -7,7 +7,7 @@ ClassIsland 的 iPhone 与 iPad 主界面由 Avalonia 统一实现。Swift 代�
 构建已整合到统一的 `.github/workflows/build_release.yml`（Actions 中显示为 `Build`），unsigned IPA 不需要 Apple 证书、provisioning profile 或 GitHub Environment Secrets。
 
 - Pull Request、`master`、`develop/v2/ios` 与 `develop/v2/misha-alpha` 的相关提交会通过仓库统一的 NUKE `PublishApp` 目标构建 Release `ios-arm64` 真机版本；这些集成构建启用 Developer Preview，并使用 `0.0.<run number>` 作为合法的临时显示版本。
-- `ios-v<major>.<minor>.<patch>` 标签会使用标签中的实际版本并关闭 Developer Preview；正式发布的 `workflow_dispatch` 则使用所选 release tag 和 `primary_version`。
+- `ios-v<major>.<minor>.<patch>` 标签会使用标签中的实际版本并关闭 Developer Preview；正式发布的 `workflow_dispatch` 则从所选 `release_tag` 提取前三段作为 iOS 显示版本，`CFBundleVersion` 使用独立的 CI 构建号。
 - 工作流运行平台抽象测试，并构建 Avalonia 主程序、Swift bridge 和 Live Activity Extension。
 - 主程序使用正式 Bundle ID `cn.classisland.ios`，Extension 使用 `cn.classisland.ios.LiveActivityExtension`。
 - 构建结果封装为标准 `Payload/ClassIsland.iOS.app` IPA，并生成 SHA-256 文件。
@@ -24,7 +24,7 @@ Windows 可以编译和测试 C# 层，但无法执行 Xcode、构建 Widget Ext
 
 ## 课程本地通知
 
-iOS 最多保留 64 条 pending local notifications。ClassIsland 为其它系统通知预留 4 条，每次按时间顺序提交最近 60 条课程提醒，并向后扫描最多 60 天以填满这个窗口。应用进入前台、课表或提醒设置改变、NTP 同步结果改变时会立即重排；应用保持活跃时还会每 6 小时补齐一次。
+iOS 最多保留 64 条 pending local notifications。ClassIsland 为其它系统通知预留 4 条，每次固定扫描未来 60 天，并在 60 条课程提醒额度内按完整课程链和上课日均衡分配；日期覆盖优先于同一天内的提醒密度。应用进入前台、课表或提醒设置改变、NTP 同步结果改变时会立即重排；应用保持活跃时还会每 6 小时补齐一次。
 
 `DispatcherTimer` 在应用被 iOS 挂起后不会继续执行，因此滚动窗口不会在无限期后台状态中自行补充。用户重新打开或切回 ClassIsland 后会自动补齐，无需手动操作。需要长期完全不启动应用仍持续更新计划时，必须增加服务端 push 或合适的 iOS BackgroundTasks 方案，但系统仍不保证后台任务准点执行。
 
@@ -66,6 +66,6 @@ await service.EndAsync(LiveActivityDismissalPolicy.Immediate);
 
 `PublishAsync` 会复用当前由 ClassIsland 创建的 Activity，并平滑更新其 `ContentState`；`IntervalId` 仅用于业务日志和内容去重，不会强制删除并新建 Activity。非 iOS 平台、低于 iOS 16.1 的系统或用户关闭实时活动时，API 会安全返回 `Unsupported` 或 `Disabled`。
 
-ActivityKit 单次内容数据不能超过 4 KB。应用可执行时，协调器只在课程状态/关键字段变化、准备上课与上下课边界以及每分钟一次的低频自愈时刷新；进入后台前会再同步一次。倒计时和进度由 ActivityKit 根据绝对时间自行渲染，iOS 16.2 及以上还会把课程边界写入 `staleDate`；如果进程已被挂起而无法更新/结束，系统会将旧内容标记为 stale，界面会明确提示打开 ClassIsland 刷新，而不会继续声称旧课程状态仍为最新。
+ActivityKit 单次内容数据不能超过 4 KB。应用可执行时，协调器只在课程状态/关键字段变化、准备上课与上下课边界以及每分钟一次的低频自愈时刷新；进入后台前会再同步一次。倒计时和进度由 ActivityKit 根据绝对时间自行渲染，iOS 16.2 及以上还会把课程边界写入 `staleDate`；扩展在系统重新绘制时也会依据结束时间识别过期内容。若进程已被挂起而无法更新/结束，界面会明确提示打开 ClassIsland 刷新，而不会继续声称旧课程状态仍为最新。
 
 “下一节课”的课前准备阶段使用与“准备上课”本地通知相同的课程 attached settings、室内/室外提前量和 channel 开关；普通课间不受该开关抑制。若应用在准备时刻已被系统挂起且此前没有活动，iOS 不允许本地代码在后台准点新建 Live Activity。`pushType: .token` 本身也不会提供本地定时执行；要保证后台首次创建与边界改写，必须完整实现 token 上报及服务端 APNs Activity push-to-start/update 链路，当前纯本地版本不作准点后台创建的保证。iPadOS 会显示系统支持的实时活动表面，但没有 iPhone 的 Dynamic Island 硬件区域。

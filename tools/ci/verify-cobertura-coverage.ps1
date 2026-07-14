@@ -24,6 +24,12 @@ $coveredSources = @(
 $requiredSources = @(
     "Models/LiveActivities/LessonLiveActivityPublicationPolicy.cs",
     "Services/AppNavigationUriParser.cs",
+    "Services/IosFallbackNotificationPayloadPolicy.cs",
+    "Services/IosLessonNotificationScheduleSelector.cs",
+    "Services/IosNotificationCapacityPolicy.cs",
+    "Services/IosNotificationMutationGate.cs",
+    "Services/IosNotificationSchedulingPolicy.cs",
+    "Services/IosNotificationSynchronizationPolicy.cs",
     "Services/IosNotificationTimeMapper.cs",
     "Services/PendingLaunchArgumentsStore.cs",
     "Services/SharedDocumentsLauncherService.cs",

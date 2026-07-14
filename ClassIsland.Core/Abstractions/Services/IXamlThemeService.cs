@@ -63,7 +63,38 @@ public interface IXamlThemeService
     /// <summary>
     /// 将主题打包到指定流。
     /// </summary>
-    Task PackageThemeAsync(string id, Stream outputStream);
+    async Task PackageThemeAsync(string id, Stream outputStream)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        ArgumentNullException.ThrowIfNull(outputStream);
+
+        var temporaryDirectory = Directory.CreateTempSubdirectory(
+            "ClassIslandTheme-").FullName;
+        var temporaryPath = Path.Combine(temporaryDirectory, "theme.zip");
+        try
+        {
+            await PackageThemeAsync(id, temporaryPath);
+            await using var input = new FileStream(
+                temporaryPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                81920,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await input.CopyToAsync(outputStream);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(temporaryDirectory, true);
+            }
+            catch
+            {
+                // Temporary cleanup must not hide the packaging result.
+            }
+        }
+    }
     
     /// <summary>
     /// 已启用的主题。主题将按照此列表的顺序加载，靠后的主题会覆盖前面的主题样式。

@@ -75,6 +75,11 @@ public class FileBrowserButton : Button
     {
         base.OnClick();
         var storageProvider = AppBase.Current.GetRootWindow().StorageProvider;
+        var root = TopLevel.GetTopLevel(this) ?? AppBase.Current.GetRootWindow();
+        using var suggestedStartLocation = string.IsNullOrWhiteSpace(StartFolder) ||
+                                           PlatformServices.FilePickerService.IsBookmark(StartFolder)
+            ? null
+            : await storageProvider.TryGetFolderFromPathAsync(StartFolder);
 
         // 启动异步操作以打开对话框。
         if (!IsFolder)
@@ -82,16 +87,22 @@ public class FileBrowserButton : Button
             PopupHelper.DisableAllPopups();
             var options = new FilePickerOpenOptions
             {
-                SuggestedStartLocation = await storageProvider.TryGetFolderFromPathAsync(StartFolder),
+                SuggestedStartLocation = suggestedStartLocation,
                 FileTypeFilter = FileTypes.AsReadOnly(),
                 AllowMultiple = false,
                 SuggestedFileName = CurrentPath
             };
-            var root = TopLevel.GetTopLevel(this) ?? AppBase.Current.GetRootWindow();
-            var files = PersistSelection
-                ? await PlatformServices.FilePickerService.OpenPersistentFilesPickerAsync(options, root)
-                : await PlatformServices.FilePickerService.OpenFilesPickerAsync(options, root);
-            PopupHelper.RestoreAllPopups();
+            List<string> files;
+            try
+            {
+                files = PersistSelection
+                    ? await PlatformServices.FilePickerService.OpenPersistentFilesPickerAsync(options, root)
+                    : await PlatformServices.FilePickerService.OpenFilesPickerAsync(options, root);
+            }
+            finally
+            {
+                PopupHelper.RestoreAllPopups();
+            }
 
             if (files.Count > 0)
             {
@@ -101,13 +112,23 @@ public class FileBrowserButton : Button
         else
         {
             PopupHelper.DisableAllPopups();
-            var folders = await PlatformServices.FilePickerService.OpenFoldersPickerAsync(new FolderPickerOpenOptions()
+            var options = new FolderPickerOpenOptions
             {
-                SuggestedStartLocation = await storageProvider.TryGetFolderFromPathAsync(StartFolder),
+                SuggestedStartLocation = suggestedStartLocation,
                 AllowMultiple = false,
                 SuggestedFileName = CurrentPath
-            }, TopLevel.GetTopLevel(this) ?? AppBase.Current.GetRootWindow());
-            PopupHelper.RestoreAllPopups();
+            };
+            List<string> folders;
+            try
+            {
+                folders = PersistSelection
+                    ? await PlatformServices.FilePickerService.OpenPersistentFoldersPickerAsync(options, root)
+                    : await PlatformServices.FilePickerService.OpenFoldersPickerAsync(options, root);
+            }
+            finally
+            {
+                PopupHelper.RestoreAllPopups();
+            }
 
             if (folders.Count > 0)
             {

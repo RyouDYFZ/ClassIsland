@@ -9,6 +9,7 @@ on:
       - '*.props'
       - 'build/**'
       - 'build.sh'
+      - 'ClassIsland.Android/**'
       - 'ClassIsland.iOS/**'
       - 'ClassIsland.iOS.Native/**'
       - 'ClassIsland/**'
@@ -23,6 +24,7 @@ on:
       - 'tools/ci/verify-ios-build-config.ps1'
       - 'tools/ci/verify-ios-ipa.sh'
       - 'tools/ci/verify-cobertura-coverage.ps1'
+      - 'tools/release-gen/init-artifacts.ps1'
       - 'vendors/EdgeTtsSharp/**'
       - 'vendors/PhainonDistributionCenter.Shared/**'
   push:
@@ -81,13 +83,23 @@ jobs:
       - name: Resolve iOS build metadata
         id: metadata
         env:
-          DISPATCH_VERSION: ${{ inputs.primary_version }}
+          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
+          resolve_release_version() {
+            local version_source="${1#ios-v}"
+            if [[ ! "$version_source" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(\.[0-9]+)?$ ]]; then
+              echo "::error::iOS release tags must contain three or four numeric components: $1"
+              exit 1
+            fi
+
+            app_version="${BASH_REMATCH[1]}"
+          }
+
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            app_version="$DISPATCH_VERSION"
+            resolve_release_version "$DISPATCH_RELEASE_TAG"
             developer_preview=false
           elif [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            app_version="${GITHUB_REF_NAME#ios-v}"
+            resolve_release_version "$GITHUB_REF_NAME"
             developer_preview=false
           else
             app_version="0.0.${GITHUB_RUN_NUMBER}"
@@ -327,8 +339,73 @@ jobs:
             ./out/*.deb
             ./out/*.pkg
 
-  build_android:
+  build_android_ci:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
+    name: Build_Android_CI
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          ref: ${{ github.sha }}
+
+      - name: Install .NET Core
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android workload
+        run: dotnet workload install android
+
+      - name: Add GitHub Package Registry
+        env:
+          NUGET_AUTH_TOKEN: ${{ github.token }}
+        run: >-
+          dotnet nuget add source
+          --username github-actions
+          --password "$NUGET_AUTH_TOKEN"
+          --store-password-in-clear-text
+          --name github
+          "https://nuget.pkg.github.com/ClassIsland/index.json"
+
+      - name: Build unsigned Android APK through NUKE
+        env:
+          appVersion: 0.0.${{ github.run_number }}
+          arch: arm64
+          osName: android
+          package: apk
+          buildType: monoaot
+          buildName: app
+          configuration: Release
+          isProductionBuild: 'false'
+        run: ./build.sh PublishAndroidApp
+
+      - name: Verify Android CI artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK_PATH="$(find ./out -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$APK_PATH"
+
+  build_android:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
+    runs-on: ubuntu-24.04
+    environment:
+      name: ${{ inputs.is_test_mode && 'staging' || 'public' }}
+    permissions:
+      contents: read
+      packages: read
     env:
       artifact_name: out_app_android_${{ matrix.arch }}_monoaot_apk
       arch: ${{ matrix.arch }}
@@ -338,11 +415,11 @@ jobs:
     name: Build_Android_${{ matrix.arch }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
-          ref: ${{ github.event_name != 'workflow_dispatch' && github.ref || github.event.inputs.release_tag }}
+          ref: ${{ inputs.release_tag }}
 
       - name: Install .NET Core
         uses: actions/setup-dotnet@v3
@@ -359,10 +436,27 @@ jobs:
         run: dotnet workload install android
 
       - name: Add GitHub Package Registry
-        run: dotnet nuget add source --username ClassIsland --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github "https://nuget.pkg.github.com/ClassIsland/index.json"
+        env:
+          NUGET_AUTH_TOKEN: ${{ github.token }}
+        run: >-
+          dotnet nuget add source
+          --username github-actions
+          --password "$NUGET_AUTH_TOKEN"
+          --store-password-in-clear-text
+          --name github
+          "https://nuget.pkg.github.com/ClassIsland/index.json"
 
-      - uses: little-core-labs/get-git-tag@v3.0.1
-        id: tagName
+      - name: Resolve Android build metadata
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::Android release tags must contain three or four numeric components: $RELEASE_TAG"
+            exit 1
+          fi
+          echo "app_version=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Decode Android keystore
         shell: bash
@@ -380,19 +474,20 @@ jobs:
           AndroidSigningStorePass: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           AndroidSigningKeyPass: ${{ secrets.ANDROID_KEY_PASSWORD }}
           AndroidSigningKeyAlias: ${{ vars.ANDROID_KEY_ALIAS }}
-          appVersion: ${{ steps.tagName.outputs.tag }}
+          appVersion: ${{ steps.metadata.outputs.app_version }}
           arch: ${{ matrix.arch }}
           osName: android
           package: apk
           buildType: monoaot
           buildName: app
-          isProductionBuild: ${{ github.event.inputs.release_tag && github.event_name != 'pull_request' && github.event.inputs.is_test_mode != 'true' }}
+          isProductionBuild: ${{ !inputs.is_test_mode }}
         run: ./build.sh PublishAndroidApp
 
       - name: Verify Android APK signature
         shell: bash
         env:
-          EXPECTED_APPLICATION_ID: ${{ github.event.inputs.release_tag && github.event_name != 'pull_request' && github.event.inputs.is_test_mode != 'true' && 'cn.classisland.android' || 'cn.classisland.android.beta' }}
+          EXPECTED_APPLICATION_ID: ${{ !inputs.is_test_mode && 'cn.classisland.android' || 'cn.classisland.android.beta' }}
+          EXPECTED_APP_VERSION: ${{ steps.metadata.outputs.app_version }}
         run: |
           set -euo pipefail
           APK_PATH="$(find ./out -maxdepth 1 -type f -name '*.apk' -print -quit)"
@@ -402,7 +497,9 @@ jobs:
           "$APKSIGNER_PATH" verify --verbose "$APK_PATH"
           AAPT_PATH="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
           test -n "$AAPT_PATH"
-          "$AAPT_PATH" dump badging "$APK_PATH" | grep -F "package: name='$EXPECTED_APPLICATION_ID'"
+          BADGING="$($AAPT_PATH dump badging "$APK_PATH")"
+          grep -F "package: name='$EXPECTED_APPLICATION_ID'" <<< "$BADGING"
+          grep -F "versionName='$EXPECTED_APP_VERSION'" <<< "$BADGING"
 
       - name: Remove Android keystore
         if: ${{ always() }}

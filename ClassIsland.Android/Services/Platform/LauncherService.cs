@@ -17,11 +17,11 @@ public class LauncherService : ILauncherService
 
         if (PlatformServices.FilePickerService.IsBookmark(path))
         {
-            var file = await PlatformServices.FilePickerService.GetFileAsync(path, topLevel) as IStorageItem
-                       ?? await PlatformServices.FilePickerService.GetFolderAsync(path, topLevel);
-            if (file != null)
+            using var item = await PlatformServices.FilePickerService.GetFileAsync(path, topLevel) as IStorageItem
+                             ?? await PlatformServices.FilePickerService.GetFolderAsync(path, topLevel);
+            if (item != null)
             {
-                await topLevel.Launcher.LaunchFileAsync(file);
+                await topLevel.Launcher.LaunchFileAsync(item);
                 return;
             }
         }
