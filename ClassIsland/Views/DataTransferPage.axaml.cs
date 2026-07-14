@@ -19,6 +19,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using ClassIsland.Core;
 using ClassIsland.Core.Abstractions.Services;
+using ClassIsland.Core.Helpers;
 using ClassIsland.Core.Helpers.UI;
 using ClassIsland.Core.Models.Components;
 using ClassIsland.Enums;
@@ -403,6 +404,14 @@ public partial class DataTransferPage : UserControl
                         return true;
                     }
 
+                    if ((importEntries & (ImportEntries.Settings |
+                                          ImportEntries.Profiles |
+                                          ImportEntries.OtherConfig)) != 0 &&
+                        normalizedName.StartsWith("ImportedFiles/", StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+
                     if ((importEntries & ImportEntries.OtherConfig) != ImportEntries.OtherConfig)
                     {
                         return false;
@@ -570,6 +579,7 @@ public partial class DataTransferPage : UserControl
             Directory.CreateDirectory(Path.Combine(temp, "Profiles/"));
             Directory.CreateDirectory(Path.Combine(temp, "Plugins/"));
             Directory.CreateDirectory(Path.Combine(temp, "Config/"));
+            Directory.CreateDirectory(Path.Combine(temp, "ImportedFiles/"));
 
             await Task.Run(() =>
             {
@@ -593,6 +603,15 @@ public partial class DataTransferPage : UserControl
                     FileFolderService.CopyFolder(
                         PluginService.PluginsRootPath,
                         Path.Combine(temp, "Plugins/"));
+                }
+                if ((ViewModel.IsSettingsSelected ||
+                     ViewModel.IsProfileSelected ||
+                     ViewModel.IsOtherConfigSelected) &&
+                    Directory.Exists(CommonDirectories.AppImportedFilesFolderPath))
+                {
+                    FileFolderService.CopyFolder(
+                        CommonDirectories.AppImportedFilesFolderPath,
+                        Path.Combine(temp, "ImportedFiles/"));
                 }
                 File.Delete(path);
                 ZipFile.CreateFromDirectory(temp, path);

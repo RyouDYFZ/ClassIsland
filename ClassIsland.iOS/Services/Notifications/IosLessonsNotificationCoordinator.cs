@@ -45,6 +45,7 @@ internal sealed class IosLessonsNotificationCoordinator : IDisposable
     private readonly IosNotificationQueueConsumer _queueConsumer = new();
     private IReadOnlyList<IosLessonNotificationRequest>? _lastRequests;
     private bool? _lastAuthorizationState;
+    private bool _isScheduleSynchronized;
     private int _refreshPending;
     private bool _isStarted;
     private bool _isWorkStarted;
@@ -183,22 +184,35 @@ internal sealed class IosLessonsNotificationCoordinator : IDisposable
             return;
         }
 
-        var authorized = await _authorizationService.RequestAuthorizationIfNeededAsync();
-        var requests = authorized
+        var schedulingEnabled = scheduleFactory.IsSchedulingEnabled;
+        IReadOnlyList<IosLessonNotificationRequest> candidateRequests = schedulingEnabled
             ? scheduleFactory.Create()
             : Array.Empty<IosLessonNotificationRequest>();
-        if (_lastAuthorizationState == authorized &&
+        var shouldUseSystemNotifications = candidateRequests.Count > 0;
+        var authorized = shouldUseSystemNotifications &&
+                         await _authorizationService.RequestAuthorizationIfNeededAsync();
+        IReadOnlyList<IosLessonNotificationRequest> requests = authorized
+            ? candidateRequests
+            : Array.Empty<IosLessonNotificationRequest>();
+        if (_isScheduleSynchronized &&
+            _lastAuthorizationState == authorized &&
             _lastRequests != null &&
             _lastRequests.SequenceEqual(requests))
         {
             return;
         }
 
-        await _scheduler.SynchronizeAsync(requests, _cancellation.Token);
+        _isScheduleSynchronized = false;
+        _queueConsumer.ClearScheduledRequests();
+        var synchronizedRequests = await _scheduler.SynchronizeAsync(
+            requests,
+            _cancellation.Token);
 
+        _queueConsumer.SetScheduledRequests(synchronizedRequests);
+        _isScheduleSynchronized = true;
         _lastAuthorizationState = authorized;
         _lastRequests = requests.ToArray();
-        if (!authorized)
+        if (shouldUseSystemNotifications && !authorized)
         {
             Console.WriteLine("iOS/iPadOS 通知权限未授予。可在系统设置中手动启用。");
         }
@@ -504,6 +518,8 @@ internal sealed class IosLessonsNotificationCoordinator : IDisposable
             _exactTimeService.PropertyChanged -= ExactTimeServiceOnPropertyChanged;
         }
         _notificationHostService?.UnregisterNotificationConsumer(_queueConsumer);
+        _queueConsumer.ClearScheduledRequests();
+        _isScheduleSynchronized = false;
         DetachChangeSubscriptions();
         DisposeObserver(ref _foregroundObserver);
         DisposeObserver(ref _resignActiveObserver);

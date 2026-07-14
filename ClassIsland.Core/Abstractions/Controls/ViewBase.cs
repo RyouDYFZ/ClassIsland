@@ -24,6 +24,8 @@ public abstract class ViewBase : ContentPage
 
     private bool _isShowed = false;
 
+    private int _navigationClosingSuppressionDepth;
+
     public static readonly StyledProperty<object?> ResultProperty = AvaloniaProperty.Register<ViewBase, object?>(
         nameof(Result));
 
@@ -224,8 +226,9 @@ public abstract class ViewBase : ContentPage
 
     private async Task OnNavigating(NavigatingFromEventArgs arg)
     {
-        if (_isShowed 
+        if (_isShowed
             && arg.NavigationType is NavigationType.Pop or NavigationType.PopModal or NavigationType.PopToRoot or NavigationType.Replace or NavigationType.Remove
+            && Volatile.Read(ref _navigationClosingSuppressionDepth) == 0
             && InvokeClosingEvent(WindowCloseReason.Undefined, false, true))
         {
             arg.Cancel = true;
@@ -255,6 +258,12 @@ public abstract class ViewBase : ContentPage
         return !InvokeClosingEvent(reason, isProgrammatic, isCancelable);
     }
 
+    internal IDisposable SuppressNavigationClosing()
+    {
+        Interlocked.Increment(ref _navigationClosingSuppressionDepth);
+        return new NavigationClosingSuppression(this);
+    }
+
     private bool InvokeClosingEvent(WindowCloseReason reason, bool isProgrammatic, bool isCancelable)
     {
         var eventArgs = new ViewClosingEventArgs(reason, isProgrammatic, isCancelable);
@@ -280,6 +289,20 @@ public abstract class ViewBase : ContentPage
         if (wasShowed)
         {
             RaiseEvent(new RoutedEventArgs(ClosedEvent));
+        }
+    }
+
+    private sealed class NavigationClosingSuppression(ViewBase owner) : IDisposable
+    {
+        private ViewBase? _owner = owner;
+
+        public void Dispose()
+        {
+            var currentOwner = Interlocked.Exchange(ref _owner, null);
+            if (currentOwner != null)
+            {
+                Interlocked.Decrement(ref currentOwner._navigationClosingSuppressionDepth);
+            }
         }
     }
 
@@ -369,7 +392,7 @@ public abstract class ViewBase : ContentPage
             // 如果不等一会再激活，可能会出现从托盘菜单打开的界面不激活的问题。
             Dispatcher.Post(() =>
             {
-                AssociatedViewHost.Activate();
+                AssociatedViewHost.Activate(this);
             });
             return;
         }

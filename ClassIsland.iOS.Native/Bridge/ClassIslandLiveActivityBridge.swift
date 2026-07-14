@@ -305,6 +305,9 @@ private actor ClassIslandLiveActivityCoordinator {
                     state: payload.state,
                     staleDate: payload.state.endTime
                 ),
+                // ClassIsland 当前没有 APNs Activity push 后端。仅请求 token
+                // 不会让本地应用在挂起后获得准点执行能力；已有活动
+                // 改用 staleDate 在课程边界显式标记内容过期。
                 pushType: nil
             )
         }

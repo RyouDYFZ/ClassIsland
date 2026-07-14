@@ -31,7 +31,7 @@ public static class CommonDirectories
     /// 文件选择器持久化导入内容的目录。
     /// </summary>
     public static string AppImportedFilesFolderPath =>
-        Path.Combine(AppSharedDocumentsFolderPath, "ImportedFiles");
+        Path.Combine(AppRootFolderPath, "ImportedFiles");
 
     /// <summary>
     /// 应用日志目录

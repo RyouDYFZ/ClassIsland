@@ -15,11 +15,12 @@ internal sealed class IosLessonNotificationScheduler
 
     private readonly HashSet<string> _catchUpHistory = LoadCatchUpHistory();
 
-    public async Task SynchronizeAsync(
+    public async Task<IReadOnlyList<IosLessonNotificationRequest>> SynchronizeAsync(
         IReadOnlyCollection<IosLessonNotificationRequest> requests,
         CancellationToken cancellationToken)
     {
         var notificationCenter = UNUserNotificationCenter.Current;
+        var synchronizedRequests = new List<IosLessonNotificationRequest>(requests.Count);
         var pending = await notificationCenter.GetPendingNotificationRequestsAsync() ?? [];
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -53,6 +54,7 @@ internal sealed class IosLessonNotificationScheduler
                  pendingIdentifiers.Contains(request.Identifier) ||
                  deliveredIdentifiers.Contains(request.Identifier)))
             {
+                synchronizedRequests.Add(request);
                 continue;
             }
 
@@ -92,11 +94,14 @@ internal sealed class IosLessonNotificationScheduler
                 content,
                 trigger);
             await notificationCenter.AddNotificationRequestAsync(nativeRequest);
+            synchronizedRequests.Add(request);
             if (request.IsCatchUp && _catchUpHistory.Add(request.Identifier))
             {
                 SaveCatchUpHistory();
             }
         }
+
+        return synchronizedRequests;
     }
 
     private static HashSet<string> LoadCatchUpHistory()

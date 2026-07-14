@@ -76,6 +76,44 @@ internal sealed class StorageItemMaterializer(string stagingRoot)
         }
     }
 
+    /// <summary>
+    /// 清理超过指定保留时间的完整导入操作目录。
+    /// </summary>
+    public int DeleteOperationsOlderThan(TimeSpan retention)
+    {
+        if (retention < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(retention));
+        }
+
+        if (!Directory.Exists(stagingRoot))
+        {
+            return 0;
+        }
+
+        var cutoff = DateTime.UtcNow - retention;
+        var deleted = 0;
+        foreach (var directory in Directory.EnumerateDirectories(stagingRoot))
+        {
+            try
+            {
+                if (Directory.GetLastWriteTimeUtc(directory) > cutoff)
+                {
+                    continue;
+                }
+
+                Directory.Delete(directory, true);
+                deleted++;
+            }
+            catch
+            {
+                // 文件可能仍被正在进行的导入占用，留待下一次清理。
+            }
+        }
+
+        return deleted;
+    }
+
     private async Task CopyFolderContentsAsync(
         IStorageFolder source,
         string destination,

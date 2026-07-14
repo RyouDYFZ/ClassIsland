@@ -1,5 +1,7 @@
 using System.Reflection;
+using Avalonia.Controls;
 using Avalonia.Platform.Storage;
+using ClassIsland.Platforms.Abstraction.Services;
 using ClassIsland.Platforms.Abstraction.Stubs.Services;
 using Xunit;
 
@@ -32,6 +34,19 @@ public sealed class AvaloniaDefaultPlatformFilePickerServiceTests
         Assert.Equal(Path.GetFullPath(path), Assert.Single(paths));
     }
 
+    [Fact]
+    public async Task AddedMaterializeMethod_HasLegacyImplementationFallback()
+    {
+        using var scope = new TemporaryDirectory();
+        var path = Path.Combine(scope.Path, "legacy-plugin.cipx");
+        await File.WriteAllTextAsync(path, "plugin");
+        var service = (IPlatformFilePickerService)new LegacyFilePickerService();
+
+        var paths = await service.MaterializeFilesAsync([CreateStorageFile(path)]);
+
+        Assert.Equal(Path.GetFullPath(path), Assert.Single(paths));
+    }
+
     private static IStorageFile CreateStorageFile(string path)
     {
         var type = typeof(IStorageFile).Assembly.GetType(
@@ -52,5 +67,17 @@ public sealed class AvaloniaDefaultPlatformFilePickerServiceTests
             Directory.CreateTempSubdirectory("classisland-default-picker-").FullName;
 
         public void Dispose() => Directory.Delete(Path, true);
+    }
+
+    private sealed class LegacyFilePickerService : IPlatformFilePickerService
+    {
+        public Task<List<string>> OpenFilesPickerAsync(FilePickerOpenOptions options, TopLevel root) =>
+            Task.FromResult<List<string>>([]);
+
+        public Task<string?> SaveFilePickerAsync(FilePickerSaveOptions options, TopLevel root) =>
+            Task.FromResult<string?>(null);
+
+        public Task<List<string>> OpenFoldersPickerAsync(FolderPickerOpenOptions options, TopLevel root) =>
+            Task.FromResult<List<string>>([]);
     }
 }

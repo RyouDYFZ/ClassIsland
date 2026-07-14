@@ -8,6 +8,7 @@ using Avalonia.Platform.Storage;
 using ClassIsland.Core;
 using ClassIsland.Core.Helpers.UI;
 using ClassIsland.Platforms.Abstraction;
+using ClassIsland.Platforms.Abstraction.Services;
 using Microsoft.Win32;
 
 namespace ClassIsland.Controls;
@@ -51,6 +52,18 @@ public class FileBrowserButton : Button
         set => SetValue(IsFolderProperty, value);
     }
 
+    public static readonly StyledProperty<bool> PersistSelectionProperty =
+        AvaloniaProperty.Register<FileBrowserButton, bool>(nameof(PersistSelection));
+
+    /// <summary>
+    /// 是否要求平台返回适合长期保存的文件引用。
+    /// </summary>
+    public bool PersistSelection
+    {
+        get => GetValue(PersistSelectionProperty);
+        set => SetValue(PersistSelectionProperty, value);
+    }
+
     public event EventHandler? FileSelected;
 
     protected override Type StyleKeyOverride => typeof(Button);
@@ -67,13 +80,17 @@ public class FileBrowserButton : Button
         if (!IsFolder)
         {
             PopupHelper.DisableAllPopups();
-            var files = await PlatformServices.FilePickerService.OpenFilesPickerAsync(new FilePickerOpenOptions
+            var options = new FilePickerOpenOptions
             {
                 SuggestedStartLocation = await storageProvider.TryGetFolderFromPathAsync(StartFolder),
                 FileTypeFilter = FileTypes.AsReadOnly(),
                 AllowMultiple = false,
                 SuggestedFileName = CurrentPath
-            }, TopLevel.GetTopLevel(this) ?? AppBase.Current.GetRootWindow());
+            };
+            var root = TopLevel.GetTopLevel(this) ?? AppBase.Current.GetRootWindow();
+            var files = PersistSelection
+                ? await PlatformServices.FilePickerService.OpenPersistentFilesPickerAsync(options, root)
+                : await PlatformServices.FilePickerService.OpenFilesPickerAsync(options, root);
             PopupHelper.RestoreAllPopups();
 
             if (files.Count > 0)

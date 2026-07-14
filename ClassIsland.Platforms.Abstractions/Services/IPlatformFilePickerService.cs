@@ -22,7 +22,24 @@ public interface IPlatformFilePickerService
     /// <param name="files">平台提供的文件。</param>
     /// <returns>可持续读取的本地路径列表。</returns>
     /// <remarks>平台实现可能在转换后释放传入文件，调用方不得继续使用这些对象。</remarks>
-    Task<List<string>> MaterializeFilesAsync(IReadOnlyList<IStorageFile> files);
+    Task<List<string>> MaterializeFilesAsync(IReadOnlyList<IStorageFile> files)
+    {
+        ArgumentNullException.ThrowIfNull(files);
+
+        var paths = new List<string>(files.Count);
+        foreach (var file in files)
+        {
+            using (file)
+            {
+                if (file.TryGetLocalPath() is { } path)
+                {
+                    paths.Add(path);
+                }
+            }
+        }
+
+        return Task.FromResult(paths);
+    }
 
     /// <summary>
     /// 打开文件保存选择器
@@ -39,10 +56,32 @@ public interface IPlatformFilePickerService
     /// <param name="root">根窗口</param>
     /// <param name="writer">向已授权目标流写入内容的回调</param>
     /// <returns>保存目标的本地路径或显示名称；取消时返回 <see langword="null"/>。</returns>
-    Task<string?> SaveFileAsync(
+    async Task<string?> SaveFileAsync(
         FilePickerSaveOptions options,
         TopLevel root,
-        Func<Stream, Task> writer);
+        Func<Stream, Task> writer)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(writer);
+
+        var path = await SaveFilePickerAsync(options, root);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        await using var output = new FileStream(
+            path,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            81920,
+            FileOptions.Asynchronous);
+        await writer(output);
+        await output.FlushAsync();
+        return path;
+    }
 
     /// <summary>
     /// 打开文件夹打开选择器

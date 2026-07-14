@@ -1,6 +1,30 @@
 name: Build
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/build_release.yml'
+      - '.nuke/build.schema.json'
+      - 'global.json'
+      - '*.props'
+      - 'build/**'
+      - 'build.sh'
+      - 'ClassIsland.iOS/**'
+      - 'ClassIsland.iOS.Native/**'
+      - 'ClassIsland/**'
+      - 'ClassIsland.Core/**'
+      - 'ClassIsland.Shared/**'
+      - 'ClassIsland.Shared.IPC/**'
+      - 'ClassIsland.Platforms.Abstractions/**'
+      - 'ClassIsland.Platforms.Abstractions.Tests/**'
+      - 'ClassIsland.Filter.iOS.slnf'
+      - 'ClassIsland.sln'
+      - 'roslyn/IconsMappingGenerator/**'
+      - 'tools/ci/verify-ios-build-config.ps1'
+      - 'tools/ci/verify-ios-ipa.sh'
+      - 'tools/ci/verify-cobertura-coverage.ps1'
+      - 'vendors/EdgeTtsSharp/**'
+      - 'vendors/PhainonDistributionCenter.Shared/**'
   push:
   workflow_dispatch:
     inputs:
@@ -23,20 +47,202 @@ env:
 jobs:
   build_ios_unsigned:
     name: Build unsigned iOS IPA
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: >-
+      ${{
+        github.event_name == 'pull_request' ||
+        github.event_name == 'workflow_dispatch' ||
+        github.ref == 'refs/heads/master' ||
+        github.ref == 'refs/heads/develop/v2/ios' ||
+        github.ref == 'refs/heads/develop/v2/misha-alpha' ||
+        startsWith(github.ref, 'refs/tags/ios-v')
+      }}
+    runs-on: macos-26
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: read
-    uses: ./.github/workflows/_build_ios_reusable.yml
-    with:
-      checkout_ref: ${{ inputs.release_tag }}
-      app_version: ${{ inputs.primary_version }}
-      build_number: ${{ format('{0}', github.run_number) }}
-      brand_type: Production
-      developer_preview: false
-      retention_days: 30
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      IOS_PROJECT: ClassIsland.iOS/ClassIsland.iOS.csproj
+      IOS_CONFIGURATION: Release
+      IOS_RUNTIME_IDENTIFIER: ios-arm64
+      APPLICATION_ID: cn.classisland.ios
+      XCODE_PATH: /Applications/Xcode_26.5.app
+      IPA_PATH: ${{ github.workspace }}/out/out_app_ios_arm64_selfContained_ipa.ipa
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.sha }}
+
+      - name: Resolve iOS build metadata
+        id: metadata
+        env:
+          DISPATCH_VERSION: ${{ inputs.primary_version }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            app_version="$DISPATCH_VERSION"
+            developer_preview=false
+          elif [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            app_version="${GITHUB_REF_NAME#ios-v}"
+            developer_preview=false
+          else
+            app_version="0.0.${GITHUB_RUN_NUMBER}"
+            developer_preview=true
+          fi
+
+          if [[ ! "$app_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::iOS ApplicationDisplayVersion must contain exactly three numeric components: $app_version"
+            exit 1
+          fi
+
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+          echo "developer_preview=$developer_preview" >> "$GITHUB_OUTPUT"
+
+      - name: Verify iOS build configuration
+        shell: pwsh
+        run: ./tools/ci/verify-ios-build-config.ps1
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+          xcodebuild -showsdks
+          xcodebuild -project ClassIsland.iOS.Native/ClassIsland.iOS.Native.xcodeproj -list
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Add GitHub Packages source
+        env:
+          NUGET_AUTH_TOKEN: ${{ github.token }}
+        run: >-
+          dotnet nuget add source
+          --username github-actions
+          --password "$NUGET_AUTH_TOKEN"
+          --store-password-in-clear-text
+          --name github
+          "https://nuget.pkg.github.com/ClassIsland/index.json"
+
+      - name: Restore iOS workload
+        run: dotnet workload restore "$IOS_PROJECT"
+
+      - name: Run platform abstraction tests
+        run: >-
+          dotnet test
+          ClassIsland.Platforms.Abstractions.Tests/ClassIsland.Platforms.Abstractions.Tests.csproj
+          -c Release
+          --collect:"XPlat Code Coverage"
+          --settings ClassIsland.Platforms.Abstractions.Tests/coverlet.runsettings
+          --results-directory "$RUNNER_TEMP/ios-tests"
+
+      - name: Upload platform abstraction coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClassIsland-iOS-coverage-${{ github.run_number }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-tests/**/coverage.cobertura.xml
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'workflow_dispatch' && 30 || 14 }}
+
+      - name: Verify platform abstraction coverage
+        shell: pwsh
+        run: >-
+          ./tools/ci/verify-cobertura-coverage.ps1
+          -ResultsDirectory "${{ runner.temp }}/ios-tests"
+          -MinimumLineRate 0.8
+
+      - name: Build unsigned iOS IPA through NUKE
+        env:
+          osName: ios
+          arch: arm64
+          package: ipa
+          buildType: selfContained
+          buildName: app
+          configuration: ${{ env.IOS_CONFIGURATION }}
+          appVersion: ${{ steps.metadata.outputs.app_version }}
+          buildNumber: ${{ github.run_number }}
+          brandType: Production
+          DeveloperPreview: ${{ steps.metadata.outputs.developer_preview }}
+          enableCodeSigning: 'false'
+        run: ./build.sh PublishApp
+
+      - name: Remove inherited code signatures
+        run: |
+          normalize_directory="$(mktemp -d "$RUNNER_TEMP/classisland-normalize-ipa.XXXXXX")"
+          trap 'rm -rf "$normalize_directory"' EXIT
+          /usr/bin/ditto -x -k "$IPA_PATH" "$normalize_directory"
+
+          shopt -s nullglob
+          app_bundles=("$normalize_directory"/Payload/*.app)
+          if [[ "${#app_bundles[@]}" -ne 1 ]]; then
+            echo "::error::The IPA must contain exactly one app bundle"
+            exit 1
+          fi
+          app_bundle="${app_bundles[0]}"
+
+          while IFS= read -r -d '' bundle; do
+            if /usr/bin/codesign --display "$bundle" >/dev/null 2>&1; then
+              /usr/bin/codesign --remove-signature "$bundle"
+            fi
+          done < <(/usr/bin/find "$app_bundle" -depth -type d \( -name '*.app' -o -name '*.appex' -o -name '*.framework' -o -name '*.xpc' -o -name '*.bundle' \) -print0)
+
+          while IFS= read -r -d '' binary; do
+            if /usr/bin/file -b "$binary" | /usr/bin/grep -q '^Mach-O' &&
+               /usr/bin/codesign --display "$binary" >/dev/null 2>&1; then
+              /usr/bin/codesign --remove-signature "$binary"
+            fi
+          done < <(/usr/bin/find "$app_bundle" -type f -print0)
+
+          while IFS= read -r -d '' signature_directory; do
+            rm -rf "$signature_directory"
+          done < <(/usr/bin/find "$app_bundle" -depth -type d -name '_CodeSignature' -print0)
+
+          while IFS= read -r -d '' provisioning_profile; do
+            rm -f "$provisioning_profile"
+          done < <(/usr/bin/find "$app_bundle" -type f -name 'embedded.mobileprovision' -print0)
+
+          /usr/bin/xattr -cr "$app_bundle"
+          rm -f "$IPA_PATH"
+          (
+            cd "$normalize_directory"
+            /usr/bin/ditto -c -k --keepParent Payload "$IPA_PATH"
+          )
+
+      - name: Verify unsigned IPA
+        run: >-
+          bash ./tools/ci/verify-ios-ipa.sh
+          "$IPA_PATH"
+          "$APPLICATION_ID"
+          "$IOS_RUNTIME_IDENTIFIER"
+
+      - name: Write iOS build summary
+        run: |
+          {
+            echo "### ClassIsland unsigned iOS IPA"
+            echo "- Version: \`${{ steps.metadata.outputs.app_version }}\`"
+            echo "- Bundle ID: \`$APPLICATION_ID\`"
+            echo "- Runtime: \`$IOS_RUNTIME_IDENTIFIER\`"
+            echo "- SHA-256: \`$(cut -d ' ' -f 1 "$IPA_PATH.sha256")\`"
+            echo "- The IPA must be signed externally before installation."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: out_app_ios_arm64_selfContained_ipa
+          path: |
+            ${{ env.IPA_PATH }}
+            ${{ env.IPA_PATH }}.sha256
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'workflow_dispatch' && 30 || 14 }}
 
   build_app:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ${{ matrix.os == 'linux' &&  'ubuntu-24.04' || ( matrix.os == 'macos' && 'macos-26' || 'windows-2022' ) }}
     env:
       build_id: appBase_${{ matrix.os }}_${{ matrix.arch }}_${{ matrix.build_type }}_${{ matrix.package }}
@@ -122,6 +328,7 @@ jobs:
             ./out/*.pkg
             
   build_launcher:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ${{ matrix.os == 'windows' && 'windows-2022' || 'ubuntu-24.04' }}
     env:
       build_id: launcher_${{ matrix.os }}_${{ matrix.arch }}_${{ matrix.build_type }}_${{ matrix.package }}
@@ -307,6 +514,7 @@ jobs:
             ${{ github.workspace }}/out_pack/*.exe
           
   build_nupkg:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-2022
     env:
       Solution_Name: ClassIsland.sln
@@ -360,8 +568,16 @@ jobs:
     runs-on: ubuntu-latest
     env:
       isTestMode: ${{ github.event.inputs.is_test_mode == 'true' }}
-    if: ${{ always() && success('pack_app') && success('build_nupkg') && github.event.inputs.release_tag && github.event_name != 'pull_request' }}
-    needs: [ pack_app, build_nupkg ]
+    if: >-
+      ${{
+        always() &&
+        needs.pack_app.result == 'success' &&
+        needs.build_nupkg.result == 'success' &&
+        needs.build_ios_unsigned.result == 'success' &&
+        github.event_name == 'workflow_dispatch' &&
+        inputs.release_tag != ''
+      }}
+    needs: [ pack_app, build_nupkg, build_ios_unsigned ]
     concurrency:
       group: "publish-public"
     environment:
@@ -378,6 +594,17 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: ./out_artifacts
+
+      - name: Verify downloaded iOS release artifact
+        run: |
+          artifact_directory="./out_artifacts/out_app_ios_arm64_selfContained_ipa"
+          ipa_name="out_app_ios_arm64_selfContained_ipa.ipa"
+          test -f "$artifact_directory/$ipa_name"
+          test -f "$artifact_directory/$ipa_name.sha256"
+          (
+            cd "$artifact_directory"
+            sha256sum --check "$ipa_name.sha256"
+          )
 
       - name: Install SSH key
         uses: shimataro/ssh-key-action@v2
@@ -407,7 +634,7 @@ jobs:
       - name: Upload APP to release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "./out/*.zip,./out/*.appx,./out/*.deb,./out/*.pkg"
+          artifacts: "./out/*.zip,./out/*.appx,./out/*.deb,./out/*.pkg,./out/*.ipa,./out/*.sha256"
           draft: true
           bodyFile: ./out/ChangeLogs.md
           token: ${{ secrets.GITHUB_TOKEN }}

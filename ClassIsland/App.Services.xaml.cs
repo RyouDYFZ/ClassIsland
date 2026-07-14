@@ -176,7 +176,10 @@ public partial class App
         {
             services.AddSettingsPage<UpdateSettingsPage>();
         }
-        services.AddSettingsPage<PluginsSettingsPage>();
+        if (!PlatformHelper.IsAppleMobile)
+        {
+            services.AddSettingsPage<PluginsSettingsPage>();
+        }
         services.AddSettingsPage<ThemesSettingsPage>();
         services.AddSettingsPage<TestSettingsPage>();
         services.AddSettingsPage<DebugPage>();

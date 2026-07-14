@@ -8,5 +8,6 @@ internal sealed record IosLessonNotificationRequest(
     DateTimeOffset FireAt,
     string Title,
     string Body,
+    Guid ChannelId,
     bool PlaySound,
     bool IsCatchUp = false);

@@ -26,7 +26,10 @@ partial class Build
             {
                 DotNetRestore(s => s
                     .SetProjectFile(IosAppEntryProject)
-                    .SetProperty("RuntimeIdentifier", RuntimeIdentifier));
+                    .SetProperty("PublishBuilding", true)
+                    .SetProperty("PublishPlatform", "ios")
+                    .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
+                    .SetProperty("ClassIsland_PlatformTarget", "arm64"));
                 return;
             }
 
@@ -49,7 +52,10 @@ partial class Build
             {
                 DotNetClean(s => s
                     .SetProject(IosAppEntryProject)
-                    .SetProperty("RuntimeIdentifier", RuntimeIdentifier));
+                    .SetProperty("PublishBuilding", true)
+                    .SetProperty("PublishPlatform", "ios")
+                    .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
+                    .SetProperty("ClassIsland_PlatformTarget", "arm64"));
                 return;
             }
 
@@ -101,7 +107,10 @@ partial class Build
                     settings = settings
                         .SetProject(IosAppEntryProject)
                         .SetConfiguration(Configuration)
+                        .SetProperty("PublishBuilding", true)
+                        .SetProperty("PublishPlatform", "ios")
                         .SetProperty("RuntimeIdentifier", RuntimeIdentifier)
+                        .SetProperty("ClassIsland_PlatformTarget", "arm64")
                         .SetProperty("ArchiveOnBuild", enableCodeSigning)
                         .SetProperty("BuildIpa", true)
                         .SetProperty("EnableCodeSigning", enableCodeSigning)
@@ -111,7 +120,7 @@ partial class Build
                         .SetProperty("IpaPackagePath", IosPublishArtifactPath);
 
                     if (string.Equals(
-                            Configuration.Value,
+                            Configuration.ToString(),
                             "Release",
                             StringComparison.OrdinalIgnoreCase))
                     {

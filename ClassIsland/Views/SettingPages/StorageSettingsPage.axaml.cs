@@ -1,4 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
@@ -15,7 +19,6 @@ using ClassIsland.Services;
 using ClassIsland.Shared;
 using ClassIsland.ViewModels.SettingsPages;
 using Microsoft.Extensions.Logging;
-using Path = System.IO.Path;
 
 namespace ClassIsland.Views.SettingPages;
 
@@ -94,11 +97,11 @@ public partial class StorageSettingsPage : SettingsPageBase
         }
     }
 
-    private async void ButtonClearImportedFiles_OnClick(object sender, RoutedEventArgs e)
+    private async void ButtonCleanupImportedFiles_OnClick(object sender, RoutedEventArgs e)
     {
         var confirmed = await ContentDialogHelper.ShowConfirmationDialog(
-            "清空导入文件副本",
-            "清理后，仍引用这些副本的自定义图片、音频和尚未完成的导入操作将无法继续使用。请确认当前没有相关操作或设置后再清理。",
+            "清理未使用的导入文件",
+            "ClassIsland 会扫描当前设置、档案和配置，只删除没有持久引用的导入项目。正在进行的一次性导入文件保存在临时目录，不受影响。",
             root: TopLevel.GetTopLevel(this));
         if (!confirmed)
         {
@@ -107,18 +110,86 @@ public partial class StorageSettingsPage : SettingsPageBase
 
         try
         {
-            if (Directory.Exists(CommonDirectories.AppImportedFilesFolderPath))
-            {
-                Directory.Delete(CommonDirectories.AppImportedFilesFolderPath, true);
-            }
-
             Directory.CreateDirectory(CommonDirectories.AppImportedFilesFolderPath);
-            this.ShowSuccessToast("已清空导入文件副本。");
+            var deleted = await Task.Run(DeleteUnreferencedImportedItems);
+            this.ShowSuccessToast(deleted == 0
+                ? "没有发现未使用的导入文件。"
+                : $"已清理 {deleted} 个未使用的导入文件项目。");
         }
         catch (Exception exception)
         {
-            Logger.LogError(exception, "无法清空 iOS 导入文件副本。");
-            this.ShowErrorToast("无法清空导入文件副本", exception);
+            Logger.LogError(exception, "无法清理 iOS 导入文件副本。");
+            this.ShowErrorToast("无法清理导入文件副本", exception);
         }
+    }
+
+    private static int DeleteUnreferencedImportedItems()
+    {
+        var importedRoot = Path.GetFullPath(CommonDirectories.AppImportedFilesFolderPath);
+        var candidates = Directory.EnumerateDirectories(importedRoot)
+            .Select(path => new
+            {
+                Path = path,
+                Marker = ImportedFileReference.Prefix +
+                         Uri.EscapeDataString(Path.GetFileName(path)) + "/"
+            })
+            .ToList();
+        if (candidates.Count == 0)
+        {
+            return 0;
+        }
+
+        var referencedMarkers = new HashSet<string>(StringComparer.Ordinal);
+        var searchableExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".json", ".yaml", ".yml", ".toml", ".xml", ".txt"
+        };
+        foreach (var file in Directory.EnumerateFiles(
+                     CommonDirectories.AppRootFolderPath,
+                     "*",
+                     SearchOption.AllDirectories))
+        {
+            var fullPath = Path.GetFullPath(file);
+            if (fullPath.StartsWith(importedRoot + Path.DirectorySeparatorChar,
+                    StringComparison.Ordinal) ||
+                !searchableExtensions.Contains(Path.GetExtension(fullPath)))
+            {
+                continue;
+            }
+
+            var info = new FileInfo(fullPath);
+            if (info.Length > 16 * 1024 * 1024)
+            {
+                continue;
+            }
+
+            string text;
+            try
+            {
+                text = File.ReadAllText(fullPath);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var candidate in candidates)
+            {
+                if (!referencedMarkers.Contains(candidate.Marker) &&
+                    text.Contains(candidate.Marker, StringComparison.Ordinal))
+                {
+                    referencedMarkers.Add(candidate.Marker);
+                }
+            }
+        }
+
+        var deleted = 0;
+        foreach (var candidate in candidates.Where(x => !referencedMarkers.Contains(x.Marker)))
+        {
+            Directory.Delete(candidate.Path, true);
+            deleted++;
+        }
+
+        return deleted;
     }
 }

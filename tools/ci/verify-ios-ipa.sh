@@ -34,6 +34,7 @@ bridge_bundle="$app_bundle/Frameworks/ClassIslandLiveActivityBridge.framework"
 bridge_binary="$bridge_bundle/ClassIslandLiveActivityBridge"
 miniaudio_binary="$app_bundle/Frameworks/miniaudio.framework/miniaudio"
 miniaudio_resolver_alias="$app_bundle/runtimes/$runtime_identifier/native/miniaudio.framework/miniaudio"
+privacy_manifest="$app_bundle/PrivacyInfo.xcprivacy"
 debug_artifacts="$(find "$app_bundle" -type f \( -name '*.pdb' -o -name 'MonoTouchDebugConfiguration.txt' -o -name 'libxamarin-dotnet-debug*' \) -print)"
 if [[ -n "$debug_artifacts" ]]; then
   echo "::error::The Release IPA contains debug artifacts:"
@@ -62,6 +63,20 @@ if [[ ! -L "$miniaudio_resolver_alias" || ! -e "$miniaudio_resolver_alias" ]]; t
 fi
 if [[ "$(readlink "$miniaudio_resolver_alias")" != "../../../../Frameworks/miniaudio.framework/miniaudio" ]]; then
   echo "::error::The SoundFlow iOS native resolver alias has an unexpected target"
+  exit 1
+fi
+if [[ ! -f "$privacy_manifest" ]]; then
+  echo "::error::The app privacy manifest is missing from the IPA"
+  exit 1
+fi
+if ! /usr/bin/plutil -lint "$privacy_manifest" >/dev/null; then
+  echo "::error::The app privacy manifest is not a valid property list"
+  exit 1
+fi
+privacy_api_type="$(/usr/libexec/PlistBuddy -c 'Print :NSPrivacyAccessedAPITypes:0:NSPrivacyAccessedAPIType' "$privacy_manifest" 2>/dev/null || true)"
+privacy_api_reason="$(/usr/libexec/PlistBuddy -c 'Print :NSPrivacyAccessedAPITypes:0:NSPrivacyAccessedAPITypeReasons:0' "$privacy_manifest" 2>/dev/null || true)"
+if [[ "$privacy_api_type" != "NSPrivacyAccessedAPICategoryUserDefaults" || "$privacy_api_reason" != "CA92.1" ]]; then
+  echo "::error::The app privacy manifest must declare the CA92.1 required reason for NSUserDefaults"
   exit 1
 fi
 
@@ -103,17 +118,35 @@ fi
 
 assert_unsigned_bundle() {
   local bundle_path="$1"
-  local bundle_name="$2"
-  if [[ -e "$bundle_path/embedded.mobileprovision" || -d "$bundle_path/_CodeSignature" ]]; then
-    echo "::error::$bundle_name unexpectedly contains signing data"
+  if [[ -e "$bundle_path/embedded.mobileprovision" || -d "$bundle_path/_CodeSignature" ]] ||
+     /usr/bin/codesign --display "$bundle_path" >/dev/null 2>&1; then
+    echo "::error::The unsigned IPA contains a signed bundle: ${bundle_path#"$app_bundle"/}"
     exit 1
   fi
 }
 
-assert_unsigned_bundle "$app_bundle" "The main app"
-assert_unsigned_bundle "$extension_bundle" "The Live Activity extension"
-assert_unsigned_bundle "$bridge_bundle" "The Live Activity bridge"
-assert_unsigned_bundle "$app_bundle/Frameworks/miniaudio.framework" "The SoundFlow miniaudio framework"
+signing_artifacts="$(/usr/bin/find "$app_bundle" \
+  \( -type d -name '_CodeSignature' -o -type f -name 'embedded.mobileprovision' \) -print)"
+if [[ -n "$signing_artifacts" ]]; then
+  echo "::error::The unsigned IPA contains signing metadata:"
+  echo "$signing_artifacts"
+  exit 1
+fi
+
+while IFS= read -r -d '' bundle_path; do
+  assert_unsigned_bundle "$bundle_path"
+done < <(
+  /usr/bin/find "$app_bundle" -depth -type d \
+    \( -name '*.app' -o -name '*.appex' -o -name '*.framework' -o -name '*.xpc' -o -name '*.bundle' \) -print0
+)
+
+while IFS= read -r -d '' binary_path; do
+  if /usr/bin/file -b "$binary_path" | /usr/bin/grep -q '^Mach-O' &&
+     /usr/bin/codesign --display "$binary_path" >/dev/null 2>&1; then
+    echo "::error::The unsigned IPA contains a signed Mach-O file: ${binary_path#"$app_bundle"/}"
+    exit 1
+  fi
+done < <(/usr/bin/find "$app_bundle" -type f -print0)
 
 app_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_bundle/Info.plist")"
 extension_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$extension_bundle/Info.plist")"
@@ -206,4 +239,9 @@ if ! /usr/bin/otool -l "$bridge_binary" | awk '
   exit 1
 fi
 
-shasum -a 256 "$ipa_path" > "$ipa_path.sha256"
+ipa_directory="$(cd "$(dirname "$ipa_path")" && pwd)"
+ipa_basename="$(basename "$ipa_path")"
+(
+  cd "$ipa_directory"
+  shasum -a 256 "$ipa_basename" > "$ipa_basename.sha256"
+)

@@ -88,8 +88,9 @@ public class UriNavigationService : IUriNavigationService
         }
     }
 
-    public void NavigateWrapped(Uri uri)
+    public void NavigateWrapped(Uri uri, out Exception? exception)
     {
+        Exception? navigationException = null;
         Dispatcher.UIThread.Invoke(() =>
         {
             try
@@ -98,9 +99,16 @@ public class UriNavigationService : IUriNavigationService
             }
             catch (Exception ex)
             {
+                navigationException = ex;
                 Logger.LogError(ex, "无法导航到 {}", uri);
                 _ = CommonTaskDialogs.ShowDialog("导航失败", $"无法导航到 {uri}：{ex.Message}");
             }
         });
+        exception = navigationException;
+    }
+
+    public void NavigateWrapped(Uri uri)
+    {
+        NavigateWrapped(uri, out _);
     }
 }

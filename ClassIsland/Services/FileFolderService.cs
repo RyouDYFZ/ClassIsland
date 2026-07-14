@@ -117,7 +117,8 @@ public class FileFolderService(SettingsService settingsService, ILogger<FileFold
         string[] backupFolders =
         [
             CommonDirectories.AppConfigPath,
-            "Profiles/"
+            "Profiles/",
+            "ImportedFiles/"
         ];
         string[] backupFiles =
         [

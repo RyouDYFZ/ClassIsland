@@ -1025,7 +1025,7 @@ public partial class App : AppBase, IAppHost
         {
             PlatformServices.DesktopToastService.ShowToastAsync("配置文件损坏", "ClassIsland 部分配置文件已损坏且无法加载，这些配置文件已恢复至默认值。点击此消息以查看详细信息和从过往备份中恢复配置文件。", () => GetService<IUriNavigationService>().NavigateWrapped(new Uri("classisland://app/config-errors")));
         }
-        if (Settings.CorruptPluginsDisabledLastSession)
+        if (!PlatformHelper.IsAppleMobile && Settings.CorruptPluginsDisabledLastSession)
         {
             Settings.CorruptPluginsDisabledLastSession = false;
             var content = new DesktopToastContent()
@@ -1354,6 +1354,7 @@ public partial class App : AppBase, IAppHost
         }
         finally
         {
+            PlatformServices.AppLifetimeService.ResumeAfterManualTerminationCanceled();
             _isShowingAppleMobileTerminationInstructions = false;
         }
     }
@@ -1385,5 +1386,3 @@ public partial class App : AppBase, IAppHost
         Stop();
     }
 }
-
-

@@ -23,4 +23,13 @@
   <ItemGroup>
     <ProjectReference Include="..\ClassIsland.Platforms.Abstractions\ClassIsland.Platforms.Abstractions.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\ClassIsland.iOS\Services\Notifications\IosLessonNotificationRequest.cs"
+             Link="iOS\IosLessonNotificationRequest.cs" />
+    <Compile Include="..\ClassIsland.iOS\Services\Notifications\IosLessonNotificationScheduleSelector.cs"
+             Link="iOS\IosLessonNotificationScheduleSelector.cs" />
+    <Compile Include="..\ClassIsland.iOS\Services\Notifications\IosNotificationSchedulingPolicy.cs"
+             Link="iOS\IosNotificationSchedulingPolicy.cs" />
+  </ItemGroup>
 </Project>

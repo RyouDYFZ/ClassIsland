@@ -25,11 +25,29 @@ internal sealed class IosLessonNotificationScheduleFactory(
     private const int MinimumPlanningHorizonDays = 7;
     private const int MaximumPlanningHorizonDays = 60;
 
-    private static readonly Guid ProviderGuid = Guid.Parse(
-        "08F0D9C3-C770-4093-A3D0-02F3D90C24BC");
+    private static readonly Guid ProviderGuid =
+        IosNotificationSchedulingPolicy.ClassNotificationProviderId;
 
     internal ClassNotificationSettings ProviderSettings { get; } =
         notificationHostService.GetNotificationProviderSettings<ClassNotificationSettings>(ProviderGuid);
+
+    internal bool IsSchedulingEnabled
+    {
+        get
+        {
+            var appSettings = settingsService.Settings;
+            var providerEnabled =
+                !appSettings.NotificationProvidersEnableStates.TryGetValue(
+                    ProviderGuid.ToString(),
+                    out var configuredProviderEnabled) ||
+                configuredProviderEnabled;
+            return IosNotificationSchedulingPolicy.ShouldRequestAuthorization(
+                appSettings.IsNotificationEnabled,
+                providerEnabled,
+                IosNotificationSchedulingPolicy.SupportedChannelIds.Select(
+                    x => GetDeliveryOptions(x).Enabled));
+        }
+    }
 
     public IReadOnlyList<IosLessonNotificationRequest> Create()
     {
@@ -68,12 +86,9 @@ internal sealed class IosLessonNotificationScheduleFactory(
             }
         }
 
-        return requests
-            .Where(x => x.FireAt > systemNow.AddSeconds(1))
-            .OrderBy(x => x.FireAt)
-            .ThenBy(x => x.Identifier, StringComparer.Ordinal)
-            .Take(MaximumPendingNotifications)
-            .ToArray();
+        return IosLessonNotificationScheduleSelector.Select(
+            requests.Where(x => x.FireAt > systemNow.AddSeconds(1)),
+            MaximumPendingNotifications);
     }
 
     /// <summary>
@@ -229,6 +244,7 @@ internal sealed class IosLessonNotificationScheduleFactory(
                     JoinBody(
                         prepareMessage,
                         $"下节课：{subjectText}，{FormatTime(lesson.Item.StartTime)} 开始。"),
+                    IosNotificationSchedulingPolicy.PrepareOnClassChannelId,
                     prepareDelivery.PlaySound,
                     isCatchUp));
             }
@@ -243,6 +259,7 @@ internal sealed class IosLessonNotificationScheduleFactory(
                     startAt,
                     EnsureText(effectiveSettings.ClassOnMaskText, "上课"),
                     $"{subjectText} · {FormatTime(lesson.Item.StartTime)}–{FormatTime(lesson.Item.EndTime)}",
+                    IosNotificationSchedulingPolicy.OnClassChannelId,
                     onClassDelivery.PlaySound));
             }
         }
@@ -280,16 +297,20 @@ internal sealed class IosLessonNotificationScheduleFactory(
                     systemNow),
                 EnsureText(effectiveSettings.ClassOffMaskText, "课间休息"),
                 body,
+                IosNotificationSchedulingPolicy.OnBreakingChannelId,
                 breakingDelivery.PlaySound));
         }
     }
 
-    private (bool Enabled, bool PlaySound) GetDeliveryOptions(string channelId)
+    private (bool Enabled, bool PlaySound) GetDeliveryOptions(string channelId) =>
+        GetDeliveryOptions(Guid.Parse(channelId));
+
+    private (bool Enabled, bool PlaySound) GetDeliveryOptions(Guid channelId)
     {
         var settings = settingsService.Settings;
         NotificationSettings? effectiveSettings = null;
         if (settings.NotificationChannelsNotifySettings.TryGetValue(
-                Guid.Parse(channelId).ToString(),
+                channelId.ToString(),
                 out var channelSettings) &&
             channelSettings.IsSettingsEnabled)
         {

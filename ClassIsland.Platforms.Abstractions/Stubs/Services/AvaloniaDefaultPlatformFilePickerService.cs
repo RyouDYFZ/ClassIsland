@@ -18,10 +18,18 @@ public class AvaloniaDefaultPlatformFilePickerService : IPlatformFilePickerServi
     {
         ArgumentNullException.ThrowIfNull(files);
 
-        var paths = files
-            .Select(x => x.TryGetLocalPath())
-            .OfType<string>()
-            .ToList();
+        var paths = new List<string>(files.Count);
+        foreach (var file in files)
+        {
+            using (file)
+            {
+                if (file.TryGetLocalPath() is { } path)
+                {
+                    paths.Add(path);
+                }
+            }
+        }
+
         return Task.FromResult(paths);
     }
 

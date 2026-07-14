@@ -110,6 +110,33 @@ public sealed class StorageItemMaterializerTests
         Assert.Empty(Directory.EnumerateFileSystemEntries(stagingRoot));
     }
 
+    [Fact]
+    public void DeleteOperationsOlderThan_RemovesOnlyExpiredDirectories()
+    {
+        using var scope = new TemporaryDirectory();
+        var stagingRoot = scope.CreateDirectory("staging");
+        var expired = Directory.CreateDirectory(Path.Combine(stagingRoot, "expired"));
+        var current = Directory.CreateDirectory(Path.Combine(stagingRoot, "current"));
+        Directory.SetLastWriteTimeUtc(expired.FullName, DateTime.UtcNow - TimeSpan.FromDays(8));
+        Directory.SetLastWriteTimeUtc(current.FullName, DateTime.UtcNow);
+        var materializer = new StorageItemMaterializer(stagingRoot);
+
+        var deleted = materializer.DeleteOperationsOlderThan(TimeSpan.FromDays(7));
+
+        Assert.Equal(1, deleted);
+        Assert.False(Directory.Exists(expired.FullName));
+        Assert.True(Directory.Exists(current.FullName));
+    }
+
+    [Fact]
+    public void DeleteOperationsOlderThan_RejectsNegativeRetention()
+    {
+        var materializer = new StorageItemMaterializer(Path.GetTempPath());
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            materializer.DeleteOperationsOlderThan(TimeSpan.FromSeconds(-1)));
+    }
+
     private static IStorageFile CreateStorageFile(string path) =>
         (IStorageFile)CreateBclStorageItem(
             "Avalonia.Platform.Storage.FileIO.BclStorageFile",

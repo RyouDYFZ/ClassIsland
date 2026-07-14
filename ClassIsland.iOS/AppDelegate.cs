@@ -43,7 +43,8 @@ public sealed class AppDelegate : AvaloniaAppDelegate<App>
     {
         UNUserNotificationCenter.Current.Delegate = _notificationCenterDelegate;
         PlatformServices.AppLifetimeService = new IosAppLifetimeService(
-            PrepareForManualTerminationAsync);
+            PrepareForManualTerminationAsync,
+            ResumeAfterManualTerminationCanceled);
         PlatformServices.FilePickerService = new IosPlatformFilePickerService();
         PlatformServices.LauncherService = new IosLauncherService();
         PlatformServices.LiveActivityService = new IosLiveActivityService();
@@ -82,7 +83,13 @@ public sealed class AppDelegate : AvaloniaAppDelegate<App>
                 throw new InvalidOperationException("iOS Avalonia 单视图生命周期尚未初始化。");
             }
 
-            var viewHost = new MobileViewHost();
+            var viewHost = new MobileViewHost(() =>
+            {
+                if (lifetime.MainView is { } mainView)
+                {
+                    mainView.IsVisible = false;
+                }
+            });
             IViewHostProvider.Instance = new IosViewHostProvider(viewHost);
             lifetime.MainView = viewHost;
             _app = app;
@@ -169,8 +176,13 @@ public sealed class AppDelegate : AvaloniaAppDelegate<App>
     private Task PrepareForManualTerminationAsync(
         CancellationToken cancellationToken)
     {
-        return _liveActivityCoordinator?.StopAndEndAsync(cancellationToken)
+        return _liveActivityCoordinator?.EndCurrentAsync(cancellationToken)
                ?? Task.CompletedTask;
+    }
+
+    private void ResumeAfterManualTerminationCanceled()
+    {
+        _liveActivityCoordinator?.ResumeAfterManualTerminationCanceled();
     }
 
 #if DEVELOPER_PREVIEW

@@ -437,12 +437,49 @@ public partial class MobileViewHost : UserControl, IViewHost
 
     public void Hide()
     {
+        if (!_isShowed)
+        {
+            return;
+        }
+
+        _isShowed = false;
+        IsVisible = false;
         _hide?.Invoke();
     }
 
     public void Activate()
     {
+        if (!_isShowed)
+        {
+            Show();
+        }
+    }
 
+    public void Activate(ViewBase view)
+    {
+        Activate();
+        if (!ActivatedViews.Contains(view) ||
+            ReferenceEquals(NavigationPage.CurrentPage, view))
+        {
+            return;
+        }
+
+        Dispatcher.Post(() => _ = BringToFrontAsync(view));
+    }
+
+    private async Task BringToFrontAsync(ViewBase view)
+    {
+        if (_isClosed ||
+            NavigationPage.IsNavigating ||
+            NavigationPage.Pages?.Contains(view) != true ||
+            ReferenceEquals(NavigationPage.CurrentPage, view))
+        {
+            return;
+        }
+
+        await RunNavigationWithProgressAsync(
+            () => NavigationPage.PopToPageAsync(view));
+        SetCurrentView(NavigationPage.CurrentPage as ViewBase);
     }
 
     public IViewHost? Owner { get; }
@@ -537,7 +574,9 @@ public partial class MobileViewHost : UserControl, IViewHost
 
     public void Show()
     {
-
+        PreShow();
+        IsVisible = true;
+        _isShowed = true;
     }
 
     public void Show(IViewHost owner)
@@ -548,7 +587,7 @@ public partial class MobileViewHost : UserControl, IViewHost
 
     private void Show(IViewHost? owner, bool modal)
     {
-
+        Show();
     }
 
     private async Task ShowViewCore(ViewBase view, ViewBase? owner, bool modal)
@@ -615,6 +654,11 @@ public partial class MobileViewHost : UserControl, IViewHost
             return false;
         }
 
+        if (NavigationPage.IsNavigating)
+        {
+            return false;
+        }
+
         if (!view.ViewDeactivating(WindowCloseReason.Undefined, true, true))
         {
             return false;
@@ -627,10 +671,17 @@ public partial class MobileViewHost : UserControl, IViewHost
             {
                 view.ViewDeactivated();
             }
+            SetCurrentView(null);
+            _isFirstViewShowed = false;
+            await RunNavigationWithProgressAsync(
+                () => NavigationPage.ReplaceAsync(new ContentPage(), null));
         }
         else
         {
-            await RunNavigationWithProgressAsync(() => NavigationPage.PopAsync());
+            using (view.SuppressNavigationClosing())
+            {
+                await RunNavigationWithProgressAsync(() => NavigationPage.PopAsync());
+            }
         }
 
         return !ActivatedViews.Contains(view);

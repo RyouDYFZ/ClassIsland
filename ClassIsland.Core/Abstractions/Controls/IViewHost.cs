@@ -57,6 +57,12 @@ public interface IViewHost
     void Activate();
 
     /// <summary>
+    /// 将自身移动到前台，并在支持页面导航的宿主中置顶指定视图。
+    /// </summary>
+    /// <param name="view">要置顶的视图。</param>
+    void Activate(ViewBase view) => Activate();
+
+    /// <summary>
     /// 显示指定的视图。
     /// </summary>
     /// <remarks>视图必须已经激活，才能在试图宿主上显示。</remarks>

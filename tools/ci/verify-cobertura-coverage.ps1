@@ -16,6 +16,27 @@ if ($reports.Count -ne 1) {
 }
 
 [xml]$coverage = Get-Content -LiteralPath $reports[0].FullName -Raw
+$coveredSources = @(
+    $coverage.SelectNodes("/coverage/packages/package/classes/class") |
+        ForEach-Object { $_.GetAttribute("filename").Replace("\", "/") } |
+        Sort-Object -Unique
+)
+$requiredSources = @(
+    "Models/LiveActivities/LessonLiveActivityPublicationPolicy.cs",
+    "Services/AppNavigationUriParser.cs",
+    "Services/IosNotificationTimeMapper.cs",
+    "Services/PendingLaunchArgumentsStore.cs",
+    "Services/SharedDocumentsLauncherService.cs",
+    "Services/StorageItemMaterializer.cs",
+    "Services/StreamExportHelper.cs",
+    "Stubs/Services/AvaloniaDefaultPlatformFilePickerService.cs"
+)
+foreach ($requiredSource in $requiredSources) {
+    if ($requiredSource -notin $coveredSources) {
+        throw "Cobertura report '$($reports[0].FullName)' does not include required abstraction source '$requiredSource'."
+    }
+}
+
 $lineRateText = $coverage.coverage.GetAttribute("line-rate")
 if ([string]::IsNullOrWhiteSpace($lineRateText)) {
     throw "Cobertura report '$($reports[0].FullName)' does not contain a root line-rate."
